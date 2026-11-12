@@ -25,6 +25,9 @@ public sealed class EtwCounters
 /// </summary>
 public sealed class EtwSampler : IDisposable
 {
+    private const string SessionName = "NetSpeedMonitor";
+    private const string SessionPrefix = "NetSpeedMonitor";
+
     private readonly object _gate = new();
     private readonly Dictionary<int, EtwCounters> _counters = new();
     private readonly TraceEventSession? _session;
@@ -43,13 +46,20 @@ public sealed class EtwSampler : IDisposable
 
         try
         {
+            // A killed instance leaves its ETW session behind, and the kernel
+            // buffers it reserved are never released. A few of those exhaust the
+            // pool and every later start fails with ERROR_NO_SYSTEM_RESOURCES.
+            StopStaleSessions();
+
             _session = new TraceEventSession(
-                $"NetSpeedMonitor-{Environment.ProcessId}",
+                SessionName,
                 TraceEventSessionOptions.Create);
 
             // Real-time sessions drop events when the OS buffer fills; the default
             // is small enough that a 2 MB/s download loses ~12% of the packets.
-            _session.BufferSizeMB = 256;
+            // 64 MB keeps up with that rate without reserving kernel memory the
+            // app never uses.
+            _session.BufferSizeMB = 64;
             _session.BufferQuantumKB = 1024;
 
             _session.EnableKernelProvider(KernelTraceEventParser.Keywords.NetworkTCPIP);
@@ -95,6 +105,36 @@ public sealed class EtwSampler : IDisposable
             }
 
             return copy;
+        }
+    }
+
+    /// <summary>
+    /// Stops sessions left behind by earlier instances. Attaching needs the same
+    /// elevation the session itself needs, which is why this only runs on the
+    /// elevated path.
+    /// </summary>
+    private static void StopStaleSessions()
+    {
+        try
+        {
+            foreach (string name in TraceEventSession.GetActiveSessionNames())
+            {
+                if (!name.StartsWith(SessionPrefix, StringComparison.OrdinalIgnoreCase)) continue;
+
+                try
+                {
+                    using var stale = new TraceEventSession(name, TraceEventSessionOptions.Attach);
+                    stale.Stop();
+                }
+                catch
+                {
+                    // Another instance may have cleaned it up first.
+                }
+            }
+        }
+        catch
+        {
+            // Enumeration failed; the session creation below reports the real error.
         }
     }
 

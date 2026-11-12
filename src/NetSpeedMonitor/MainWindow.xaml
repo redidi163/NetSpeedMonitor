@@ -131,6 +131,32 @@
                  Foreground="{StaticResource TextSecondary}" FontSize="10"
                  Margin="0,10,0,2" Visibility="Collapsed"/>
 
+      <TextBlock Grid.Row="5" x:Name="ConnectionHeader" Text="进程连接"
+                 Foreground="{StaticResource TextSecondary}" FontSize="10"
+                 Margin="0,10,0,2" Visibility="Collapsed"/>
+
+      <ItemsControl x:Name="ConnectionList" Grid.Row="6" Visibility="Collapsed">
+        <ItemsControl.ItemTemplate>
+          <DataTemplate>
+            <Grid Height="22">
+              <Border Height="16" Width="{Binding BarWidth}" HorizontalAlignment="Left"
+                      Background="#1F8A8F98" CornerRadius="3" VerticalAlignment="Center"/>
+              <Grid>
+                <Grid.ColumnDefinitions>
+                  <ColumnDefinition Width="*"/>
+                  <ColumnDefinition Width="Auto"/>
+                </Grid.ColumnDefinitions>
+                <TextBlock Text="{Binding Name}" FontSize="11" Foreground="{StaticResource TextPrimary}"
+                           VerticalAlignment="Center" TextTrimming="CharacterEllipsis"/>
+                <TextBlock Grid.Column="1" Text="{Binding CountText}" FontSize="11"
+                           Foreground="{StaticResource TextSecondary}" VerticalAlignment="Center"
+                           Margin="8,0,0,0"/>
+              </Grid>
+            </Grid>
+          </DataTemplate>
+        </ItemsControl.ItemTemplate>
+      </ItemsControl>
+
       <ItemsControl x:Name="ProcessList" Grid.Row="6" Visibility="Collapsed">
         <ItemsControl.ItemTemplate>
           <DataTemplate>

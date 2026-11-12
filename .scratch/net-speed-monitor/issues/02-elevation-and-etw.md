@@ -14,8 +14,11 @@
       （`etw-verify11.csv`：`load_etw=12007555` vs `payload=12000000`，`+0.06%`，`etw_lost=0`）
 - [x] 本地代理（verge-mihomo）不计入 Top 列表，回环流量归发起方
       （提权截图：msedge.exe 3.1M 第一，verge-mihomo 不在列表）
-- [x] 程序退出后 `logman query -ets` 查不到残留会话
-      （7 次探针全部退出后查询，无 `NetSpeedMonitor-*` 会话）
+- [x] 程序退出后不残留会话
+      **这条之前的结论是错的**：`logman query -ets` 在非提权 shell 里看不到内核会话，
+      当时查到的空表不能证明没有残留。提权查询可见 5 个 `NetSpeedMonitor-<pid>` 残留会话
+      （强杀实例留下的）。现在正常退出走 `Dispose → Stop`，异常残留由启动时的
+      `StopStaleSessions()` 清理，会话名固定为 `NetSpeedMonitor`。
 - [x] 未提权启动时不启动 ETW，界面给出明确提示
       （截图 `nsm-02-restricted.png`：黄色条“未提权，进程速率不可用”）
 

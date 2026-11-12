@@ -48,6 +48,50 @@ internal static class NativeMethods
     [DllImport("iphlpapi.dll", ExactSpelling = true)]
     internal static extern int GetBestInterface(uint dwDestAddr, out uint pdwBestIfIndex);
 
+    internal const int AfInet = 2;
+    internal const int AfInet6 = 23;
+    internal const uint TcpTableOwnerPidAll = 5;
+    internal const uint TcpStateEstablished = 5;
+    internal const int ErrorInsufficientBuffer = 122;
+
+    [DllImport("iphlpapi.dll")]
+    internal static extern uint GetExtendedTcpTable(
+        IntPtr pTcpTable,
+        ref int pdwSize,
+        bool bOrder,
+        int ulAf,
+        uint tableClass,
+        uint reserved);
+
+    [StructLayout(LayoutKind.Sequential)]
+    internal struct MIB_TCPROW_OWNER_PID
+    {
+        public uint dwState;
+        public uint dwLocalAddr;
+        public uint dwLocalPort;
+        public uint dwRemoteAddr;
+        public uint dwRemotePort;
+        public uint dwOwningPid;
+    }
+
+    [StructLayout(LayoutKind.Sequential)]
+    internal struct MIB_TCP6ROW_OWNER_PID
+    {
+        [MarshalAs(UnmanagedType.ByValArray, SizeConst = 16)]
+        public byte[] ucLocalAddr;
+
+        public uint dwLocalScopeId;
+        public uint dwLocalPort;
+
+        [MarshalAs(UnmanagedType.ByValArray, SizeConst = 16)]
+        public byte[] ucRemoteAddr;
+
+        public uint dwRemoteScopeId;
+        public uint dwRemotePort;
+        public uint dwState;
+        public uint dwOwningPid;
+    }
+
     /// <summary>
     /// GetIfEntry marshals ByValArray fields from the managed instance, so every
     /// array must be allocated before the call or the marshaler throws.

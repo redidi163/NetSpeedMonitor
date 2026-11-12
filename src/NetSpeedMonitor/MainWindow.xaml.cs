@@ -16,6 +16,7 @@ public partial class MainWindow : Window
     private readonly Dictionary<int, (ProcessIdentity Identity, double ExpiresAt)> _identityCache = new();
 
     private double _now;
+    private double _lastConnectionRefresh = double.NegativeInfinity;
 
     public MainWindow()
     {
@@ -35,7 +36,11 @@ public partial class MainWindow : Window
         else
         {
             Banner.Visibility = Visibility.Visible;
-            Footer.Text = _etw.Error is null ? "受限模式：仅显示网卡总量" : $"ETW 启动失败：{_etw.Error}";
+            ConnectionHeader.Visibility = Visibility.Visible;
+            ConnectionList.Visibility = Visibility.Visible;
+            Footer.Text = _etw.Error is null
+                ? "受限模式 · 进程按连接数排序"
+                : $"ETW 启动失败：{_etw.Error}";
         }
 
         _timer = new DispatcherTimer { Interval = TimeSpan.FromSeconds(1) };
@@ -57,12 +62,31 @@ public partial class MainWindow : Window
         UpMbps.Text = $"{up * 8 / 1_000_000:0.0} Mbps";
         Trend.Push(down);
 
-        if (!_etw.IsRunning) return;
+        if (!_etw.IsRunning)
+        {
+            // Connection counts come from the TCP table, which needs no elevation.
+            if (_now - _lastConnectionRefresh >= 2)
+            {
+                _lastConnectionRefresh = _now;
+                RefreshConnections();
+            }
+
+            return;
+        }
 
         (List<ProcessRateRow> top, double external) = _aggregator.Update(_etw.Snapshot(), _now);
 
         ProcessList.ItemsSource = top;
         Footer.Text = $"ETW 载荷 {ProcessRates.FormatRate(external)}/s · 本地代理不计入";
+    }
+
+    private void RefreshConnections()
+    {
+        Dictionary<int, int> counts = ConnectionCounter.CountByPid();
+        ConnectionList.ItemsSource = ConnectionCounter.BuildRows(counts, pid => ResolveIdentity(pid).Name);
+
+        int total = counts.Values.Sum();
+        ConnectionHeader.Text = total == 0 ? "进程连接" : $"进程连接 · {total} 条";
     }
 
     /// <summary>
