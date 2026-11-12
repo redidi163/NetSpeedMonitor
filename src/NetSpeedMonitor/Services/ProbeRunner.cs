@@ -141,7 +141,7 @@ public static class ProbeRunner
             return Process.Start(new ProcessStartInfo
             {
                 FileName = "curl.exe",
-                Arguments = "-s --max-time 60 --limit-rate 4M -o NUL \"https://speed.cloudflare.com/__down?bytes=500000000\"",
+                Arguments = "-s --fail --max-time 60 --limit-rate 2M -o NUL \"https://mirrors.tuna.tsinghua.edu.cn/ubuntu/ls-lR.gz\"",
                 UseShellExecute = false,
                 CreateNoWindow = true,
             });
