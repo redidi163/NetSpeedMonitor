@@ -70,7 +70,9 @@ public static class ProbeRunner
         DateTime startedAt = DateTime.UtcNow;
 
         adapter.TryReadRaw(out uint firstIn, out uint firstOut);
-        long firstEtw = ExternalTotal(etw.Snapshot());
+        Dictionary<int, EtwCounters> baseline = etw.Snapshot();
+        long firstEtwIn = ExternalIn(baseline);
+        long firstEtwOut = ExternalOut(baseline);
 
         if (generateLoad)
         {
@@ -104,16 +106,6 @@ public static class ProbeRunner
             builder.AppendLine(string.Create(CultureInfo.InvariantCulture,
                 $"{elapsed},{down:0},{up:0},{external:0},{topName},{topDown:0},{topUp:0},{cumIn},{cumOut},{cumEtw}"));
         }
-
-        adapter.TryReadRaw(out uint lastIn, out uint lastOut);
-        long lastEtw = ExternalTotal(etw.Snapshot());
-        double totalSeconds = (Stopwatch.GetTimestamp() - startTicks) / (double)Stopwatch.Frequency;
-
-        long adapterIn = unchecked((uint)(lastIn - firstIn));
-        long adapterOut = unchecked((uint)(lastOut - firstOut));
-        long adapterTotal = adapterIn + adapterOut;
-        long etwTotal = lastEtw - firstEtw;
-        double diffPct = adapterTotal == 0 ? 0 : (etwTotal - adapterTotal) * 100.0 / adapterTotal;
 
         string loadState;
         long payloadBytes = -1;
@@ -153,12 +145,38 @@ public static class ProbeRunner
             }
         }
 
+        // Let the ETW pump drain the events for the last bytes curl received.
+        Thread.Sleep(1200);
+
+        // The final snapshot is taken after the load process exits, so the
+        // cumulative window covers the whole download even when it runs past
+        // the sampling loop.
+        adapter.TryReadRaw(out uint lastIn, out uint lastOut);
+        Dictionary<int, EtwCounters> final = etw.Snapshot();
+        double totalSeconds = (Stopwatch.GetTimestamp() - startTicks) / (double)Stopwatch.Frequency;
+
+        long adapterIn = unchecked((uint)(lastIn - firstIn));
+        long adapterOut = unchecked((uint)(lastOut - firstOut));
+        long adapterTotal = adapterIn + adapterOut;
+        long etwIn = ExternalIn(final) - firstEtwIn;
+        long etwOut = ExternalOut(final) - firstEtwOut;
+        long etwTotal = etwIn + etwOut;
+        double diffPct = adapterTotal == 0 ? 0 : (etwTotal - adapterTotal) * 100.0 / adapterTotal;
+        double diffInPct = adapterIn == 0 ? 0 : (etwIn - adapterIn) * 100.0 / adapterIn;
+        double diffOutPct = adapterOut == 0 ? 0 : (etwOut - adapterOut) * 100.0 / adapterOut;
+
+        long loadEtw = 0;
+        if (loadProcess is not null && final.TryGetValue(loadProcess.Id, out EtwCounters? loadCounters))
+        {
+            loadEtw = loadCounters.ExternalIn + loadCounters.ExternalOut;
+        }
+
         double vsPayload = payloadBytes <= 0
             ? 0
-            : (etwTotal - payloadBytes) * 100.0 / payloadBytes;
+            : (loadEtw - payloadBytes) * 100.0 / payloadBytes;
 
         builder.AppendLine(string.Create(CultureInfo.InvariantCulture,
-            $"# summary seconds={totalSeconds:0.00} adapter_in={adapterIn} adapter_out={adapterOut} adapter_total={adapterTotal} etw_external={etwTotal} diff_pct={diffPct:0.00} etw_lost={etw.EventsLost} payload={payloadBytes} vs_payload_pct={vsPayload:0.00} load={loadState}"));
+            $"# summary seconds={totalSeconds:0.00} adapter_in={adapterIn} adapter_out={adapterOut} adapter_total={adapterTotal} etw_in={etwIn} etw_out={etwOut} etw_external={etwTotal} diff_pct={diffPct:0.00} diff_in_pct={diffInPct:0.00} diff_out_pct={diffOutPct:0.00} etw_lost={etw.EventsLost} load_pid={loadProcess?.Id ?? 0} load_etw={loadEtw} payload={payloadBytes} vs_payload_pct={vsPayload:0.00} load={loadState}"));
 
         File.WriteAllText(outputPath, builder.ToString(), Encoding.UTF8);
     }
@@ -195,6 +213,28 @@ public static class ProbeRunner
         foreach (EtwCounters counters in snapshot.Values)
         {
             total += counters.ExternalIn + counters.ExternalOut;
+        }
+
+        return total;
+    }
+
+    private static long ExternalIn(IReadOnlyDictionary<int, EtwCounters> snapshot)
+    {
+        long total = 0;
+        foreach (EtwCounters counters in snapshot.Values)
+        {
+            total += counters.ExternalIn;
+        }
+
+        return total;
+    }
+
+    private static long ExternalOut(IReadOnlyDictionary<int, EtwCounters> snapshot)
+    {
+        long total = 0;
+        foreach (EtwCounters counters in snapshot.Values)
+        {
+            total += counters.ExternalOut;
         }
 
         return total;
