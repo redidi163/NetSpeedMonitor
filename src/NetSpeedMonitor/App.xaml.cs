@@ -30,7 +30,10 @@ public partial class App : Application
             string output = e.Args.Length >= 3
                 ? e.Args[2]
                 : Path.Combine(Path.GetTempPath(), "netspeed-etw.csv");
-            Services.ProbeRunner.RunEtw(int.Parse(e.Args[1], CultureInfo.InvariantCulture), output);
+            Services.ProbeRunner.RunEtw(
+                int.Parse(e.Args[1], CultureInfo.InvariantCulture),
+                output,
+                e.Args.Length >= 4 && e.Args[3] == "load");
             Shutdown();
             return;
         }

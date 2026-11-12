@@ -1,8 +1,10 @@
 using System.Diagnostics;
 using System.Globalization;
 using System.IO;
+using System.Net.Http;
 using System.Text;
 using System.Threading;
+using System.Threading.Tasks;
 
 namespace NetSpeedMonitor.Services;
 
@@ -45,7 +47,7 @@ public static class ProbeRunner
     /// Adapter totals plus ETW external-segment totals and the current Top 1.
     /// Requires an elevated process; writes etw_error= when the session fails.
     /// </summary>
-    public static void RunEtw(int seconds, string outputPath)
+    public static void RunEtw(int seconds, string outputPath, bool generateLoad = false)
     {
         var adapter = new AdapterSampler();
         adapter.SelectDefaultAdapter();
@@ -58,6 +60,14 @@ public static class ProbeRunner
             builder.AppendLine($"etw_error={etw.Error}");
             File.WriteAllText(outputPath, builder.ToString(), Encoding.UTF8);
             return;
+        }
+
+        CancellationTokenSource? cancellation = null;
+        if (generateLoad)
+        {
+            cancellation = new CancellationTokenSource();
+            _ = Task.Run(() => DownloadLoop(cancellation.Token));
+            Thread.Sleep(2000);
         }
 
         builder.AppendLine("elapsed_ms,adapter_down,adapter_up,etw_external,top1,top1_down,top1_up,adapter_cum_in,adapter_cum_out,etw_cum_ext");
@@ -110,7 +120,43 @@ public static class ProbeRunner
         builder.AppendLine(string.Create(CultureInfo.InvariantCulture,
             $"# summary seconds={totalSeconds:0.00} adapter_in={adapterIn} adapter_out={adapterOut} adapter_total={adapterTotal} etw_external={etwTotal} diff_pct={diffPct:0.00}"));
 
+        cancellation?.Cancel();
+
         File.WriteAllText(outputPath, builder.ToString(), Encoding.UTF8);
+    }
+
+    private static async Task DownloadLoop(CancellationToken token)
+    {
+        using var http = new HttpClient { Timeout = TimeSpan.FromSeconds(30) };
+
+        while (!token.IsCancellationRequested)
+        {
+            try
+            {
+                using HttpResponseMessage response = await http.GetAsync(
+                    "https://speed.cloudflare.com/__down?bytes=200000000",
+                    HttpCompletionOption.ResponseHeadersRead,
+                    token);
+
+                await using Stream stream = await response.Content.ReadAsStreamAsync(token);
+                await stream.CopyToAsync(Stream.Null, 64 * 1024, token);
+            }
+            catch (OperationCanceledException)
+            {
+                return;
+            }
+            catch
+            {
+                try
+                {
+                    await Task.Delay(500, token);
+                }
+                catch (OperationCanceledException)
+                {
+                    return;
+                }
+            }
+        }
     }
 
     private static long ExternalTotal(IReadOnlyDictionary<int, EtwCounters> snapshot)
