@@ -12,14 +12,16 @@ public partial class MainWindow : Window
     private readonly AdapterSampler _sampler = new();
     private readonly EtwSampler _etw = new();
     private readonly DispatcherTimer _timer;
-    private readonly Dictionary<int, string> _names = new();
+    private readonly ProcessAggregator _aggregator;
+    private readonly Dictionary<int, (ProcessIdentity Identity, double ExpiresAt)> _identityCache = new();
 
-    private Dictionary<int, EtwCounters> _lastEtw = new();
-    private long _lastEtwTicks;
+    private double _now;
 
     public MainWindow()
     {
         InitializeComponent();
+
+        _aggregator = new ProcessAggregator(ResolveIdentity);
 
         _sampler.SelectDefaultAdapter();
         AdapterLabel.Text = _sampler.Index == 0 ? "网速 · 未连接" : $"网速 · {_sampler.AdapterName}";
@@ -28,8 +30,6 @@ public partial class MainWindow : Window
         {
             ProcessHeader.Visibility = Visibility.Visible;
             ProcessList.Visibility = Visibility.Visible;
-            _lastEtw = _etw.Snapshot();
-            _lastEtwTicks = Stopwatch.GetTimestamp();
             Footer.Text = "ETW 已连接 · 本地代理不计入 Top";
         }
         else
@@ -47,6 +47,8 @@ public partial class MainWindow : Window
 
     private void Tick()
     {
+        _now = Stopwatch.GetTimestamp() / (double)Stopwatch.Frequency;
+
         (double down, double up) = _sampler.Sample();
 
         DownMain.Text = FormatMegabytes(down);
@@ -57,41 +59,54 @@ public partial class MainWindow : Window
 
         if (!_etw.IsRunning) return;
 
-        Dictionary<int, EtwCounters> snapshot = _etw.Snapshot();
-        long now = Stopwatch.GetTimestamp();
-        double seconds = (now - _lastEtwTicks) / (double)Stopwatch.Frequency;
-
-        if (seconds <= 0 || seconds > 5)
-        {
-            _lastEtw = snapshot;
-            _lastEtwTicks = now;
-            return;
-        }
-
-        (List<ProcessRateRow> top, double external) = ProcessRates.Compute(_lastEtw, snapshot, seconds, ResolveName);
-        _lastEtw = snapshot;
-        _lastEtwTicks = now;
+        (List<ProcessRateRow> top, double external) = _aggregator.Update(_etw.Snapshot(), _now);
 
         ProcessList.ItemsSource = top;
-        Footer.Text = $"ETW 外网 {ProcessRates.FormatRate(external)}/s · 本地代理不计入";
+        Footer.Text = $"ETW 载荷 {ProcessRates.FormatRate(external)}/s · 本地代理不计入";
     }
 
-    private string ResolveName(int pid)
+    /// <summary>
+    /// Resolves a PID to its merge key. Cached for a few seconds because opening
+    /// every process once per tick is expensive; a reused PID shows up as a
+    /// changed start time, and the aggregator drops that tick anyway.
+    /// </summary>
+    private ProcessIdentity ResolveIdentity(int pid)
     {
-        if (_names.TryGetValue(pid, out string? cached)) return cached;
+        if (_identityCache.TryGetValue(pid, out (ProcessIdentity Identity, double ExpiresAt) cached)
+            && cached.ExpiresAt > _now)
+        {
+            return cached.Identity;
+        }
 
-        string name;
+        ProcessIdentity identity = LookupIdentity(pid);
+        _identityCache[pid] = (identity, _now + 5);
+        return identity;
+    }
+
+    private static ProcessIdentity LookupIdentity(int pid)
+    {
         try
         {
-            name = $"{Process.GetProcessById(pid).ProcessName}.exe";
+            using Process process = Process.GetProcessById(pid);
+            string name = $"{process.ProcessName}.exe";
+
+            string key;
+            try
+            {
+                key = process.MainModule?.FileName ?? name;
+            }
+            catch
+            {
+                // Protected process: the name alone still merges its instances.
+                key = name;
+            }
+
+            return new ProcessIdentity(key.ToLowerInvariant(), name, process.StartTime.ToUniversalTime().Ticks);
         }
         catch
         {
-            name = $"pid {pid}";
+            return new ProcessIdentity($"pid:{pid}", $"pid {pid}", 0);
         }
-
-        _names[pid] = name;
-        return name;
     }
 
     private static string FormatMegabytes(double bytesPerSecond)

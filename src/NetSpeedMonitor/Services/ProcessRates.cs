@@ -8,6 +8,9 @@ public sealed record ProcessRateRow(
     string UpText,
     double BarWidth);
 
+/// <summary>Bytes moved by one PID between two snapshots, split by segment.</summary>
+public readonly record struct PidDelta(long In, long Out, long Loopback, long External);
+
 public static class ProcessRates
 {
     /// <summary>
@@ -15,10 +18,32 @@ public static class ProcessRates
     /// segment in the same window is treated as a local proxy: its counters are
     /// dropped so its downstream clients are not counted twice.
     /// </summary>
-    private const long ProxyThresholdBytes = 8192;
+    public const long ProxyThresholdBytes = 8192;
 
-    private const double BarMaxWidth = 120;
+    public const double BarMaxWidth = 120;
 
+    public static PidDelta Delta(EtwCounters before, EtwCounters now)
+    {
+        long loopbackIn = Math.Max(0, now.LoopbackIn - before.LoopbackIn);
+        long loopbackOut = Math.Max(0, now.LoopbackOut - before.LoopbackOut);
+        long externalIn = Math.Max(0, now.ExternalIn - before.ExternalIn);
+        long externalOut = Math.Max(0, now.ExternalOut - before.ExternalOut);
+
+        return new PidDelta(
+            loopbackIn + externalIn,
+            loopbackOut + externalOut,
+            loopbackIn + loopbackOut,
+            externalIn + externalOut);
+    }
+
+    public static bool IsLocalProxy(PidDelta delta) =>
+        delta.Loopback > ProxyThresholdBytes && delta.External > ProxyThresholdBytes;
+
+    /// <summary>
+    /// Single-window aggregation used by the headless probe. The UI uses
+    /// <see cref="ProcessAggregator"/>, which adds the 3 second average and the
+    /// exe merge on top of the same primitives.
+    /// </summary>
     public static (List<ProcessRateRow> Top, double ExternalBytesPerSecond) Compute(
         IReadOnlyDictionary<int, EtwCounters> previous,
         IReadOnlyDictionary<int, EtwCounters> current,
@@ -35,25 +60,13 @@ public static class ProcessRates
             previous.TryGetValue(pid, out EtwCounters? before);
             before ??= new EtwCounters();
 
-            long loopbackIn = Math.Max(0, now.LoopbackIn - before.LoopbackIn);
-            long loopbackOut = Math.Max(0, now.LoopbackOut - before.LoopbackOut);
-            long externalIn = Math.Max(0, now.ExternalIn - before.ExternalIn);
-            long externalOut = Math.Max(0, now.ExternalOut - before.ExternalOut);
+            PidDelta delta = Delta(before, now);
+            externalTotal += delta.External;
 
-            long loopback = loopbackIn + loopbackOut;
-            long external = externalIn + externalOut;
-            externalTotal += external;
+            if (IsLocalProxy(delta)) continue;
+            if (delta.In == 0 && delta.Out == 0) continue;
 
-            if (loopback > ProxyThresholdBytes && external > ProxyThresholdBytes)
-            {
-                // Local proxy: counted in externalTotal for reconciliation,
-                // excluded from the Top list to avoid double counting.
-                continue;
-            }
-
-            if (loopback == 0 && external == 0) continue;
-
-            rows.Add((nameOf(pid), loopbackIn + externalIn, loopbackOut + externalOut, loopback + external));
+            rows.Add((nameOf(pid), delta.In, delta.Out, delta.In + delta.Out));
         }
 
         if (rows.Count == 0) return ([], externalTotal / seconds);
