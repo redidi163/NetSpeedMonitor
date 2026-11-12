@@ -61,11 +61,6 @@ public static class ProbeRunner
         }
 
         Process? loadProcess = null;
-        if (generateLoad)
-        {
-            loadProcess = TryStartLoad();
-            Thread.Sleep(2500);
-        }
 
         builder.AppendLine("elapsed_ms,adapter_down,adapter_up,etw_external,top1,top1_down,top1_up,adapter_cum_in,adapter_cum_out,etw_cum_ext");
 
@@ -76,6 +71,12 @@ public static class ProbeRunner
 
         adapter.TryReadRaw(out uint firstIn, out uint firstOut);
         long firstEtw = ExternalTotal(etw.Snapshot());
+
+        if (generateLoad)
+        {
+            loadProcess = TryStartLoad();
+            Thread.Sleep(1500);
+        }
 
         for (int i = 0; i < seconds; i++)
         {
@@ -140,7 +141,7 @@ public static class ProbeRunner
             return Process.Start(new ProcessStartInfo
             {
                 FileName = "curl.exe",
-                Arguments = "-s --max-time 120 -o NUL \"https://speed.cloudflare.com/__down?bytes=500000000\"",
+                Arguments = "-s --max-time 60 --limit-rate 4M -o NUL \"https://speed.cloudflare.com/__down?bytes=500000000\"",
                 UseShellExecute = false,
                 CreateNoWindow = true,
             });
