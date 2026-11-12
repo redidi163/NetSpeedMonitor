@@ -6,6 +6,11 @@ internal static class NativeMethods
 {
     internal const int ErrorSuccess = 0;
 
+    /// <summary>Broadcast on suspend/resume; the reason arrives in wParam.</summary>
+    internal const int WmPowerBroadcast = 0x0218;
+    internal const int PbtApmResumeAutomatic = 0x0012;
+    internal const int PbtApmResumeSuspend = 0x0007;
+
     [StructLayout(LayoutKind.Sequential)]
     internal struct MIB_IFROW
     {
@@ -48,8 +53,7 @@ internal static class NativeMethods
     [DllImport("iphlpapi.dll", ExactSpelling = true)]
     internal static extern int GetBestInterface(uint dwDestAddr, out uint pdwBestIfIndex);
 
-    internal const int AfInet = 2;
-    internal const int AfInet6 = 23;
+    internal const int AfInet = 2;    internal const int AfInet6 = 23;
     internal const uint TcpTableOwnerPidAll = 5;
     internal const uint TcpStateEstablished = 5;
     internal const int ErrorInsufficientBuffer = 122;

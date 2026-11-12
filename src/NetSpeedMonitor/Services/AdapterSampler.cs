@@ -1,5 +1,4 @@
 using System.Diagnostics;
-using System.Net.NetworkInformation;
 using NetSpeedMonitor.Interop;
 
 namespace NetSpeedMonitor.Services;
@@ -23,17 +22,30 @@ public sealed class AdapterSampler
 
     public uint Index => _index;
 
-    public bool SelectDefaultAdapter()
+    /// <summary>Pins the sampler to one interface; 0 means "no interface".</summary>
+    public bool Select(uint index)
     {
-        uint index = DefaultRoute.GetDefaultInterfaceIndex();
-        if (index == 0) return false;
         if (index == _index) return true;
 
         _index = index;
         _hasBaseline = false;
-        AdapterName = ResolveName(index) ?? $"接口 {index}";
+        AdapterName = index == 0
+            ? "未连接"
+            : AdapterCatalog.NameOf(index) ?? $"接口 {index}";
         return true;
     }
+
+    /// <summary>
+    /// Re-reads the default route and switches when it moved. Called every few
+    /// seconds so a cable/Wi-Fi change is picked up without a restart.
+    /// </summary>
+    public bool FollowDefaultRoute() => Select(DefaultRoute.GetDefaultInterfaceIndex());
+
+    /// <summary>Kept for the probe, which always measures the default route.</summary>
+    public bool SelectDefaultAdapter() => FollowDefaultRoute();
+
+    /// <summary>Drops the previous counters, e.g. after the machine wakes up.</summary>
+    public void ResetBaseline() => _hasBaseline = false;
 
     public bool TryReadRaw(out uint inOctets, out uint outOctets)
     {
@@ -95,37 +107,5 @@ public sealed class AdapterSampler
         inOctets = row.dwInOctets;
         outOctets = row.dwOutOctets;
         return true;
-    }
-
-    private static string? ResolveName(uint index)
-    {
-        foreach (NetworkInterface ni in NetworkInterface.GetAllNetworkInterfaces())
-        {
-            IPInterfaceProperties props;
-            try
-            {
-                props = ni.GetIPProperties();
-            }
-            catch (NetworkInformationException)
-            {
-                continue;
-            }
-
-            // GetIPv4/IPv6Properties throw 10043 on interfaces where the
-            // protocol is not bound; treat that as "no match", not a failure.
-            try
-            {
-                if (props.GetIPv4Properties()?.Index == (int)index) return ni.Name;
-            }
-            catch (NetworkInformationException) { }
-
-            try
-            {
-                if (props.GetIPv6Properties()?.Index == (int)index) return ni.Name;
-            }
-            catch (NetworkInformationException) { }
-        }
-
-        return null;
     }
 }

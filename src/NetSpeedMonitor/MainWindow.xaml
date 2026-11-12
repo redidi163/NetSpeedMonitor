@@ -3,7 +3,7 @@
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
         xmlns:controls="clr-namespace:NetSpeedMonitor.Controls"
         Title="NetSpeedMonitor"
-        Width="280" Height="320"
+        Width="280" Height="348"
         WindowStyle="None" AllowsTransparency="True" Background="Transparent"
         ResizeMode="NoResize" ShowInTaskbar="False" Topmost="True"
         WindowStartupLocation="Manual" Left="40" Top="40"
@@ -63,6 +63,86 @@
         </Trigger>
       </Style.Triggers>
     </Style>
+    <Style x:Key="DarkComboItem" TargetType="ComboBoxItem">
+      <Setter Property="Foreground" Value="{StaticResource TextPrimary}"/>
+      <Setter Property="FontSize" Value="11"/>
+      <Setter Property="Padding" Value="8,4"/>
+      <Setter Property="Template">
+        <Setter.Value>
+          <ControlTemplate TargetType="ComboBoxItem">
+            <Border x:Name="Row" Background="Transparent" CornerRadius="4"
+                    Padding="{TemplateBinding Padding}">
+              <ContentPresenter/>
+            </Border>
+            <ControlTemplate.Triggers>
+              <Trigger Property="IsHighlighted" Value="True">
+                <Setter TargetName="Row" Property="Background" Value="#2A4CC2FF"/>
+              </Trigger>
+            </ControlTemplate.Triggers>
+          </ControlTemplate>
+        </Setter.Value>
+      </Setter>
+    </Style>
+
+    <Style x:Key="DarkCombo" TargetType="ComboBox">
+      <Setter Property="Foreground" Value="{StaticResource TextPrimary}"/>
+      <Setter Property="Background" Value="#1AFFFFFF"/>
+      <Setter Property="BorderBrush" Value="#2AFFFFFF"/>
+      <Setter Property="FontSize" Value="11"/>
+      <Setter Property="Height" Value="24"/>
+      <Setter Property="ItemContainerStyle" Value="{StaticResource DarkComboItem}"/>
+      <Setter Property="Template">
+        <Setter.Value>
+          <ControlTemplate TargetType="ComboBox">
+            <Grid>
+              <ToggleButton Focusable="False" ClickMode="Press"
+                            IsChecked="{Binding IsDropDownOpen, Mode=TwoWay,
+                                                RelativeSource={RelativeSource TemplatedParent}}">
+                <ToggleButton.Template>
+                  <ControlTemplate TargetType="ToggleButton">
+                    <Border x:Name="Chrome" CornerRadius="4" BorderThickness="1"
+                            Background="{Binding Background, RelativeSource={RelativeSource AncestorType=ComboBox}}"
+                            BorderBrush="{Binding BorderBrush, RelativeSource={RelativeSource AncestorType=ComboBox}}">
+                      <Path HorizontalAlignment="Right" VerticalAlignment="Center"
+                            Margin="0,0,7,0" Data="M0,0 L8,0 L4,5 Z"
+                            Fill="{StaticResource TextSecondary}"/>
+                    </Border>
+                    <ControlTemplate.Triggers>
+                      <Trigger Property="IsMouseOver" Value="True">
+                        <Setter TargetName="Chrome" Property="Background" Value="#2AFFFFFF"/>
+                      </Trigger>
+                    </ControlTemplate.Triggers>
+                  </ControlTemplate>
+                </ToggleButton.Template>
+              </ToggleButton>
+
+              <ContentPresenter Margin="8,0,24,0" VerticalAlignment="Center"
+                                IsHitTestVisible="False"
+                                Content="{TemplateBinding SelectionBoxItem}"
+                                ContentTemplate="{TemplateBinding SelectionBoxItemTemplate}"
+                                ContentStringFormat="{TemplateBinding SelectionBoxItemStringFormat}"/>
+
+              <Popup x:Name="PART_Popup" AllowsTransparency="True" Placement="Bottom"
+                     Focusable="False" PopupAnimation="Slide"
+                     IsOpen="{TemplateBinding IsDropDownOpen}">
+                <Border Background="#F2161A20" BorderBrush="#2AFFFFFF" BorderThickness="1"
+                        CornerRadius="6" Margin="0,2,0,0" Padding="2"
+                        MinWidth="{Binding ActualWidth, RelativeSource={RelativeSource TemplatedParent}}">
+                  <ScrollViewer MaxHeight="220" VerticalScrollBarVisibility="Auto">
+                    <ItemsPresenter/>
+                  </ScrollViewer>
+                </Border>
+              </Popup>
+            </Grid>
+            <ControlTemplate.Triggers>
+              <Trigger Property="IsEnabled" Value="False">
+                <Setter Property="Opacity" Value="0.5"/>
+              </Trigger>
+            </ControlTemplate.Triggers>
+          </ControlTemplate>
+        </Setter.Value>
+      </Setter>
+    </Style>
   </Window.Resources>
 
   <Border CornerRadius="12" Background="#E614161A" BorderBrush="#2AFFFFFF" BorderThickness="1" Padding="14,10">
@@ -79,10 +159,15 @@
       </Grid.RowDefinitions>
 
       <Grid Grid.Row="0">
-        <TextBlock x:Name="AdapterLabel" Text="网速"
-                   Foreground="{StaticResource TextSecondary}" FontSize="11"
-                   VerticalAlignment="Center" TextTrimming="CharacterEllipsis"/>
-        <Button x:Name="CloseButton" Style="{StaticResource IconButton}"
+        <Grid.ColumnDefinitions>
+          <ColumnDefinition Width="*"/>
+          <ColumnDefinition Width="Auto"/>
+        </Grid.ColumnDefinitions>
+        <ComboBox x:Name="AdapterPicker" Style="{StaticResource DarkCombo}"
+                  VerticalAlignment="Center"
+                  SelectionChanged="OnAdapterSelectionChanged"/>
+        <Button x:Name="CloseButton" Grid.Column="1" Style="{StaticResource IconButton}"
+                Margin="6,0,0,0"
                 HorizontalAlignment="Right" Content="✕" Click="OnCloseClick"/>
       </Grid>
 
