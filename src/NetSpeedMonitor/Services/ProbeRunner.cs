@@ -115,36 +115,73 @@ public static class ProbeRunner
         long etwTotal = lastEtw - firstEtw;
         double diffPct = adapterTotal == 0 ? 0 : (etwTotal - adapterTotal) * 100.0 / adapterTotal;
 
-        string loadState = loadProcess is null
-            ? "not_started"
-            : loadProcess.HasExited ? $"exited={loadProcess.ExitCode}" : "running";
+        string loadState;
+        long payloadBytes = -1;
 
-        try
+        if (loadProcess is null)
         {
-            if (loadProcess is { HasExited: false }) loadProcess.Kill(true);
+            loadState = "not_started";
         }
-        catch
+        else
         {
-            // Already gone.
+            bool exited = loadProcess.WaitForExit(25_000);
+            if (!exited)
+            {
+                try
+                {
+                    loadProcess.Kill(true);
+                }
+                catch
+                {
+                    // Already gone.
+                }
+            }
+
+            loadState = exited ? $"exited={loadProcess.ExitCode}" : "killed";
+
+            try
+            {
+                string text = loadProcess.StandardOutput.ReadToEnd().Trim();
+                if (long.TryParse(text, NumberStyles.Integer, CultureInfo.InvariantCulture, out long parsed))
+                {
+                    payloadBytes = parsed;
+                }
+            }
+            catch
+            {
+                // No output to read.
+            }
         }
+
+        double vsPayload = payloadBytes <= 0
+            ? 0
+            : (etwTotal - payloadBytes) * 100.0 / payloadBytes;
 
         builder.AppendLine(string.Create(CultureInfo.InvariantCulture,
-            $"# summary seconds={totalSeconds:0.00} adapter_in={adapterIn} adapter_out={adapterOut} adapter_total={adapterTotal} etw_external={etwTotal} diff_pct={diffPct:0.00} load={loadState}"));
+            $"# summary seconds={totalSeconds:0.00} adapter_in={adapterIn} adapter_out={adapterOut} adapter_total={adapterTotal} etw_external={etwTotal} diff_pct={diffPct:0.00} etw_lost={etw.EventsLost} payload={payloadBytes} vs_payload_pct={vsPayload:0.00} load={loadState}"));
 
         File.WriteAllText(outputPath, builder.ToString(), Encoding.UTF8);
     }
 
+    /// <summary>
+    /// Downloads a fixed 12 MB range so the exact payload size is known: curl
+    /// prints it to stdout via -w, which gives an independent byte count to
+    /// compare the ETW counters against.
+    /// </summary>
     private static Process? TryStartLoad()
     {
         try
         {
-            return Process.Start(new ProcessStartInfo
+            var startInfo = new ProcessStartInfo
             {
                 FileName = "curl.exe",
-                Arguments = "-s --fail --max-time 60 --limit-rate 2M -o NUL \"https://mirrors.tuna.tsinghua.edu.cn/ubuntu/ls-lR.gz\"",
+                Arguments = "-s --fail --max-time 60 -r 0-11999999 -o NUL -w \"%{size_download}\" \"https://mirrors.tuna.tsinghua.edu.cn/ubuntu-releases/22.04/ubuntu-22.04.5-desktop-amd64.iso\"",
                 UseShellExecute = false,
                 CreateNoWindow = true,
-            });
+                RedirectStandardOutput = true,
+            };
+
+            return Process.Start(startInfo);
         }
         catch
         {

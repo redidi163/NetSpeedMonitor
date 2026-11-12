@@ -34,6 +34,9 @@ public sealed class EtwSampler : IDisposable
     public bool IsRunning => _session is not null;
     public string? Error { get; }
 
+    /// <summary>Events the OS dropped before we could read them.</summary>
+    public int EventsLost => _session?.EventsLost ?? 0;
+
     public EtwSampler()
     {
         if (!Elevation.IsElevated()) return;
@@ -43,6 +46,11 @@ public sealed class EtwSampler : IDisposable
             _session = new TraceEventSession(
                 $"NetSpeedMonitor-{Environment.ProcessId}",
                 TraceEventSessionOptions.Create);
+
+            // Real-time sessions drop events when the OS buffer fills; the default
+            // is small enough that a 2 MB/s download loses ~12% of the packets.
+            _session.BufferSizeMB = 256;
+            _session.BufferQuantumKB = 1024;
 
             _session.EnableKernelProvider(KernelTraceEventParser.Keywords.NetworkTCPIP);
 
