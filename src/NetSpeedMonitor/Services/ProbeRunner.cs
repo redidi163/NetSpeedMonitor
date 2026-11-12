@@ -1,10 +1,8 @@
 using System.Diagnostics;
 using System.Globalization;
 using System.IO;
-using System.Net.Http;
 using System.Text;
 using System.Threading;
-using System.Threading.Tasks;
 
 namespace NetSpeedMonitor.Services;
 
@@ -62,12 +60,11 @@ public static class ProbeRunner
             return;
         }
 
-        CancellationTokenSource? cancellation = null;
+        Process? loadProcess = null;
         if (generateLoad)
         {
-            cancellation = new CancellationTokenSource();
-            _ = Task.Run(() => DownloadLoop(cancellation.Token));
-            Thread.Sleep(2000);
+            loadProcess = TryStartLoad();
+            Thread.Sleep(2500);
         }
 
         builder.AppendLine("elapsed_ms,adapter_down,adapter_up,etw_external,top1,top1_down,top1_up,adapter_cum_in,adapter_cum_out,etw_cum_ext");
@@ -117,45 +114,40 @@ public static class ProbeRunner
         long etwTotal = lastEtw - firstEtw;
         double diffPct = adapterTotal == 0 ? 0 : (etwTotal - adapterTotal) * 100.0 / adapterTotal;
 
-        builder.AppendLine(string.Create(CultureInfo.InvariantCulture,
-            $"# summary seconds={totalSeconds:0.00} adapter_in={adapterIn} adapter_out={adapterOut} adapter_total={adapterTotal} etw_external={etwTotal} diff_pct={diffPct:0.00}"));
+        string loadState = loadProcess is null
+            ? "not_started"
+            : loadProcess.HasExited ? $"exited={loadProcess.ExitCode}" : "running";
 
-        cancellation?.Cancel();
+        try
+        {
+            if (loadProcess is { HasExited: false }) loadProcess.Kill(true);
+        }
+        catch
+        {
+            // Already gone.
+        }
+
+        builder.AppendLine(string.Create(CultureInfo.InvariantCulture,
+            $"# summary seconds={totalSeconds:0.00} adapter_in={adapterIn} adapter_out={adapterOut} adapter_total={adapterTotal} etw_external={etwTotal} diff_pct={diffPct:0.00} load={loadState}"));
 
         File.WriteAllText(outputPath, builder.ToString(), Encoding.UTF8);
     }
 
-    private static async Task DownloadLoop(CancellationToken token)
+    private static Process? TryStartLoad()
     {
-        using var http = new HttpClient { Timeout = TimeSpan.FromSeconds(30) };
-
-        while (!token.IsCancellationRequested)
+        try
         {
-            try
+            return Process.Start(new ProcessStartInfo
             {
-                using HttpResponseMessage response = await http.GetAsync(
-                    "https://speed.cloudflare.com/__down?bytes=200000000",
-                    HttpCompletionOption.ResponseHeadersRead,
-                    token);
-
-                await using Stream stream = await response.Content.ReadAsStreamAsync(token);
-                await stream.CopyToAsync(Stream.Null, 64 * 1024, token);
-            }
-            catch (OperationCanceledException)
-            {
-                return;
-            }
-            catch
-            {
-                try
-                {
-                    await Task.Delay(500, token);
-                }
-                catch (OperationCanceledException)
-                {
-                    return;
-                }
-            }
+                FileName = "curl.exe",
+                Arguments = "-s --max-time 120 -o NUL \"https://speed.cloudflare.com/__down?bytes=500000000\"",
+                UseShellExecute = false,
+                CreateNoWindow = true,
+            });
+        }
+        catch
+        {
+            return null;
         }
     }
 
