@@ -1,0 +1,12 @@
+bin/
+obj/
+logs/
+shots/
+__pycache__/
+*.py[cod]
+.ruff_cache/
+.pytest_cache/
+.venv/
+*.log
+*.bak
+publish/
