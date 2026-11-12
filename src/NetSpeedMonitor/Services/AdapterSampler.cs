@@ -35,6 +35,18 @@ public sealed class AdapterSampler
         return true;
     }
 
+    public bool TryReadRaw(out uint inOctets, out uint outOctets)
+    {
+        if (_index == 0)
+        {
+            inOctets = 0;
+            outOctets = 0;
+            return false;
+        }
+
+        return TryRead(_index, out inOctets, out outOctets);
+    }
+
     public (double Down, double Up) Sample()
     {
         if (_index == 0) return (0, 0);

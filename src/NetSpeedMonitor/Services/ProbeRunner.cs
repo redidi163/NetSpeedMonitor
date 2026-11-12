@@ -60,11 +60,15 @@ public static class ProbeRunner
             return;
         }
 
-        builder.AppendLine("elapsed_ms,adapter_down,adapter_up,etw_external,top1,top1_down,top1_up");
+        builder.AppendLine("elapsed_ms,adapter_down,adapter_up,etw_external,top1,top1_down,top1_up,adapter_cum_in,adapter_cum_out,etw_cum_ext");
 
         Dictionary<int, EtwCounters> previous = etw.Snapshot();
         long previousTicks = Stopwatch.GetTimestamp();
+        long startTicks = previousTicks;
         DateTime startedAt = DateTime.UtcNow;
+
+        adapter.TryReadRaw(out uint firstIn, out uint firstOut);
+        long firstEtw = ExternalTotal(etw.Snapshot());
 
         for (int i = 0; i < seconds; i++)
         {
@@ -82,16 +86,42 @@ public static class ProbeRunner
             previous = snapshot;
             previousTicks = now;
 
+            adapter.TryReadRaw(out uint cumIn, out uint cumOut);
+            long cumEtw = ExternalTotal(snapshot);
             long elapsed = (long)(DateTime.UtcNow - startedAt).TotalMilliseconds;
             string topName = top.Count > 0 ? top[0].Name : "-";
             double topDown = top.Count > 0 ? top[0].DownBytesPerSecond : 0;
             double topUp = top.Count > 0 ? top[0].UpBytesPerSecond : 0;
 
             builder.AppendLine(string.Create(CultureInfo.InvariantCulture,
-                $"{elapsed},{down:0},{up:0},{external:0},{topName},{topDown:0},{topUp:0}"));
+                $"{elapsed},{down:0},{up:0},{external:0},{topName},{topDown:0},{topUp:0},{cumIn},{cumOut},{cumEtw}"));
         }
 
+        adapter.TryReadRaw(out uint lastIn, out uint lastOut);
+        long lastEtw = ExternalTotal(etw.Snapshot());
+        double totalSeconds = (Stopwatch.GetTimestamp() - startTicks) / (double)Stopwatch.Frequency;
+
+        long adapterIn = unchecked((uint)(lastIn - firstIn));
+        long adapterOut = unchecked((uint)(lastOut - firstOut));
+        long adapterTotal = adapterIn + adapterOut;
+        long etwTotal = lastEtw - firstEtw;
+        double diffPct = adapterTotal == 0 ? 0 : (etwTotal - adapterTotal) * 100.0 / adapterTotal;
+
+        builder.AppendLine(string.Create(CultureInfo.InvariantCulture,
+            $"# summary seconds={totalSeconds:0.00} adapter_in={adapterIn} adapter_out={adapterOut} adapter_total={adapterTotal} etw_external={etwTotal} diff_pct={diffPct:0.00}"));
+
         File.WriteAllText(outputPath, builder.ToString(), Encoding.UTF8);
+    }
+
+    private static long ExternalTotal(IReadOnlyDictionary<int, EtwCounters> snapshot)
+    {
+        long total = 0;
+        foreach (EtwCounters counters in snapshot.Values)
+        {
+            total += counters.ExternalIn + counters.ExternalOut;
+        }
+
+        return total;
     }
 
     private static string ResolveName(int pid)
