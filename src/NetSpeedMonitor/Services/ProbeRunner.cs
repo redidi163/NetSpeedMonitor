@@ -1,3 +1,4 @@
+using System.Diagnostics;
 using System.Globalization;
 using System.IO;
 using System.Text;
@@ -6,11 +7,13 @@ using System.Threading;
 namespace NetSpeedMonitor.Services;
 
 /// <summary>
-/// Headless sampling mode used to verify readings against an independent source.
-/// Writes one CSV row per second: elapsed_ms,down_bps,up_bps,interval_seconds.
+/// Headless sampling modes used to verify readings against an independent source.
 /// </summary>
 public static class ProbeRunner
 {
+    /// <summary>
+    /// Writes one CSV row per second: elapsed_ms,down_bps,up_bps,interval_s.
+    /// </summary>
     public static void Run(int seconds, string outputPath)
     {
         var sampler = new AdapterSampler();
@@ -36,5 +39,70 @@ public static class ProbeRunner
         }
 
         File.WriteAllText(outputPath, builder.ToString(), Encoding.UTF8);
+    }
+
+    /// <summary>
+    /// Adapter totals plus ETW external-segment totals and the current Top 1.
+    /// Requires an elevated process; writes etw_error= when the session fails.
+    /// </summary>
+    public static void RunEtw(int seconds, string outputPath)
+    {
+        var adapter = new AdapterSampler();
+        adapter.SelectDefaultAdapter();
+
+        using var etw = new EtwSampler();
+
+        var builder = new StringBuilder();
+        if (!etw.IsRunning)
+        {
+            builder.AppendLine($"etw_error={etw.Error}");
+            File.WriteAllText(outputPath, builder.ToString(), Encoding.UTF8);
+            return;
+        }
+
+        builder.AppendLine("elapsed_ms,adapter_down,adapter_up,etw_external,top1,top1_down,top1_up");
+
+        Dictionary<int, EtwCounters> previous = etw.Snapshot();
+        long previousTicks = Stopwatch.GetTimestamp();
+        DateTime startedAt = DateTime.UtcNow;
+
+        for (int i = 0; i < seconds; i++)
+        {
+            Thread.Sleep(1000);
+
+            (double down, double up) = adapter.Sample();
+            Dictionary<int, EtwCounters> snapshot = etw.Snapshot();
+            long now = Stopwatch.GetTimestamp();
+            double interval = (now - previousTicks) / (double)Stopwatch.Frequency;
+            if (interval <= 0 || interval > 5) interval = 1;
+
+            (List<ProcessRateRow> top, double external) =
+                ProcessRates.Compute(previous, snapshot, interval, ResolveName);
+
+            previous = snapshot;
+            previousTicks = now;
+
+            long elapsed = (long)(DateTime.UtcNow - startedAt).TotalMilliseconds;
+            string topName = top.Count > 0 ? top[0].Name : "-";
+            double topDown = top.Count > 0 ? top[0].DownBytesPerSecond : 0;
+            double topUp = top.Count > 0 ? top[0].UpBytesPerSecond : 0;
+
+            builder.AppendLine(string.Create(CultureInfo.InvariantCulture,
+                $"{elapsed},{down:0},{up:0},{external:0},{topName},{topDown:0},{topUp:0}"));
+        }
+
+        File.WriteAllText(outputPath, builder.ToString(), Encoding.UTF8);
+    }
+
+    private static string ResolveName(int pid)
+    {
+        try
+        {
+            return $"{Process.GetProcessById(pid).ProcessName}.exe";
+        }
+        catch
+        {
+            return $"pid {pid}";
+        }
     }
 }

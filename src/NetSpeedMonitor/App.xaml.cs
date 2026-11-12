@@ -1,3 +1,5 @@
+using System.ComponentModel;
+using System.Diagnostics;
 using System.Globalization;
 using System.IO;
 using System.Threading;
@@ -23,8 +25,18 @@ public partial class App : Application
             return;
         }
 
-        _mutex = new Mutex(true, @"Local\NetSpeedMonitor.SingleInstance", out bool created);
-        if (!created)
+        if (e.Args.Length >= 2 && e.Args[0] == "--probe-etw")
+        {
+            string output = e.Args.Length >= 3
+                ? e.Args[2]
+                : Path.Combine(Path.GetTempPath(), "netspeed-etw.csv");
+            Services.ProbeRunner.RunEtw(int.Parse(e.Args[1], CultureInfo.InvariantCulture), output);
+            Shutdown();
+            return;
+        }
+
+        _mutex = AcquireMutex(TimeSpan.FromSeconds(4));
+        if (_mutex is null)
         {
             Shutdown();
             return;
@@ -37,6 +49,51 @@ public partial class App : Application
         _tray.ToggleRequested += ToggleWindow;
         _tray.ExitRequested += ExitApp;
         _window.Show();
+    }
+
+    private static Mutex? AcquireMutex(TimeSpan timeout)
+    {
+        DateTime deadline = DateTime.UtcNow + timeout;
+
+        while (true)
+        {
+            var mutex = new Mutex(true, @"Local\NetSpeedMonitor.SingleInstance", out bool created);
+            if (created) return mutex;
+
+            mutex.Dispose();
+            if (DateTime.UtcNow >= deadline) return null;
+            Thread.Sleep(150);
+        }
+    }
+
+    /// <summary>
+    /// Starts a new elevated copy and lets this one exit. The new process waits
+    /// up to 4 seconds for the single-instance mutex, which covers the gap.
+    /// </summary>
+    public void RestartElevated()
+    {
+        string? executable = Environment.ProcessPath;
+        if (executable is null) return;
+
+        try
+        {
+            Process.Start(new ProcessStartInfo(executable)
+            {
+                UseShellExecute = true,
+                Verb = "runas",
+            });
+        }
+        catch (Win32Exception)
+        {
+            // UAC cancelled; stay in restricted mode.
+            return;
+        }
+
+        _tray?.Dispose();
+        _mutex?.Dispose();
+        _mutex = null;
+        _window?.Close();
+        Shutdown();
     }
 
     private void ToggleWindow()
