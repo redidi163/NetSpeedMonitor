@@ -1,0 +1,23 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <OutputType>WinExe</OutputType>
+    <TargetFramework>net10.0-windows</TargetFramework>
+    <UseWPF>true</UseWPF>
+    <UseWindowsForms>true</UseWindowsForms>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <LangVersion>latest</LangVersion>
+    <AssemblyName>NetSpeedMonitor</AssemblyName>
+    <RootNamespace>NetSpeedMonitor</RootNamespace>
+  </PropertyGroup>
+
+  <!-- UseWindowsForms adds System.Windows.Forms/System.Drawing to implicit
+       usings, which collides with WPF types (Application, Brush, Brushes).
+       The tray code imports them through aliases instead. -->
+  <ItemGroup>
+    <Using Remove="System.Windows.Forms" />
+    <Using Remove="System.Drawing" />
+  </ItemGroup>
+
+</Project>

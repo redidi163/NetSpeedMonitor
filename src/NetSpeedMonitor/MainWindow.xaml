@@ -1,0 +1,97 @@
+<Window x:Class="NetSpeedMonitor.MainWindow"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        xmlns:controls="clr-namespace:NetSpeedMonitor.Controls"
+        Title="NetSpeedMonitor"
+        Width="280" Height="200"
+        WindowStyle="None" AllowsTransparency="True" Background="Transparent"
+        ResizeMode="NoResize" ShowInTaskbar="False" Topmost="True"
+        WindowStartupLocation="Manual" Left="40" Top="40"
+        FontFamily="Segoe UI"
+        MouseLeftButtonDown="OnWindowMouseDown">
+
+  <Window.Resources>
+    <SolidColorBrush x:Key="TextPrimary" Color="#E8EAED"/>
+    <SolidColorBrush x:Key="TextSecondary" Color="#8A8F98"/>
+    <SolidColorBrush x:Key="AccentDown" Color="#4CC2FF"/>
+    <SolidColorBrush x:Key="AccentUp" Color="#FF9E6D"/>
+
+    <Style x:Key="IconButton" TargetType="Button">
+      <Setter Property="Background" Value="Transparent"/>
+      <Setter Property="Foreground" Value="{StaticResource TextSecondary}"/>
+      <Setter Property="BorderThickness" Value="0"/>
+      <Setter Property="FontSize" Value="13"/>
+      <Setter Property="Width" Value="22"/>
+      <Setter Property="Height" Value="22"/>
+      <Setter Property="Cursor" Value="Hand"/>
+      <Setter Property="Template">
+        <Setter.Value>
+          <ControlTemplate TargetType="Button">
+            <Border Background="{TemplateBinding Background}" CornerRadius="11">
+              <ContentPresenter HorizontalAlignment="Center" VerticalAlignment="Center"/>
+            </Border>
+          </ControlTemplate>
+        </Setter.Value>
+      </Setter>
+      <Style.Triggers>
+        <Trigger Property="IsMouseOver" Value="True">
+          <Setter Property="Background" Value="#22FFFFFF"/>
+        </Trigger>
+      </Style.Triggers>
+    </Style>
+  </Window.Resources>
+
+  <Border CornerRadius="12" Background="#E614161A" BorderBrush="#2AFFFFFF" BorderThickness="1" Padding="14,10">
+    <Grid>
+      <Grid.RowDefinitions>
+        <RowDefinition Height="Auto"/>
+        <RowDefinition Height="Auto"/>
+        <RowDefinition Height="Auto"/>
+        <RowDefinition Height="*"/>
+        <RowDefinition Height="Auto"/>
+      </Grid.RowDefinitions>
+
+      <Grid Grid.Row="0">
+        <TextBlock x:Name="AdapterLabel" Text="网速"
+                   Foreground="{StaticResource TextSecondary}" FontSize="11"
+                   VerticalAlignment="Center" TextTrimming="CharacterEllipsis"/>
+        <Button x:Name="CloseButton" Style="{StaticResource IconButton}"
+                HorizontalAlignment="Right" Content="✕" Click="OnCloseClick"/>
+      </Grid>
+
+      <StackPanel Grid.Row="1" Orientation="Horizontal" Margin="0,6,0,0">
+        <TextBlock Text="↓" Foreground="{StaticResource AccentDown}" FontSize="18"
+                   VerticalAlignment="Bottom" Margin="0,0,8,3"/>
+        <TextBlock x:Name="DownMain" Text="0.00"
+                   Foreground="{StaticResource TextPrimary}" FontSize="26" FontWeight="SemiBold"
+                   VerticalAlignment="Bottom"/>
+        <TextBlock Text=" MB/s" Foreground="{StaticResource TextSecondary}" FontSize="11"
+                   VerticalAlignment="Bottom" Margin="2,0,0,6"/>
+        <TextBlock x:Name="DownMbps" Text="0.0 Mbps"
+                   Foreground="{StaticResource TextSecondary}" FontSize="11"
+                   VerticalAlignment="Bottom" Margin="8,0,0,6"/>
+      </StackPanel>
+
+      <StackPanel Grid.Row="2" Orientation="Horizontal" Margin="0,2,0,0">
+        <TextBlock Text="↑" Foreground="{StaticResource AccentUp}" FontSize="16"
+                   VerticalAlignment="Bottom" Margin="0,0,8,3"/>
+        <TextBlock x:Name="UpMain" Text="0.00"
+                   Foreground="{StaticResource TextPrimary}" FontSize="18" FontWeight="SemiBold"
+                   VerticalAlignment="Bottom"/>
+        <TextBlock Text=" MB/s" Foreground="{StaticResource TextSecondary}" FontSize="11"
+                   VerticalAlignment="Bottom" Margin="2,0,0,4"/>
+        <TextBlock x:Name="UpMbps" Text="0.0 Mbps"
+                   Foreground="{StaticResource TextSecondary}" FontSize="11"
+                   VerticalAlignment="Bottom" Margin="8,0,0,4"/>
+      </StackPanel>
+
+      <controls:Sparkline x:Name="Trend" Grid.Row="3"
+                          Margin="0,8,0,0" Height="34"
+                          Stroke="{StaticResource AccentDown}"/>
+
+      <TextBlock Grid.Row="4" x:Name="Footer" Text="进程速率：待工单 02"
+                 Foreground="{StaticResource TextSecondary}" FontSize="10"
+                 Margin="0,6,0,0"/>
+    </Grid>
+  </Border>
+</Window>
