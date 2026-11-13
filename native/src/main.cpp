@@ -3,7 +3,6 @@
 #include "ball.h"
 #include "etw.h"
 #include "panel.h"
-#include "settings.h"
 #include "tray.h"
 
 #include <algorithm>
@@ -36,8 +35,9 @@ struct App
     BallWindow ball;
     PanelWindow panel;
     TrayIcon tray;
-    Settings settings;
     std::deque<float> trend;
+    bool offline = false;
+    int64_t lastResumeTicks = 0;
     int tick = 0;
     HWND host = nullptr;
 };
@@ -105,18 +105,24 @@ void TogglePanel(App& app)
 
 void OnTick(App& app)
 {
-    // Auto mode re-reads the default route every 5 ticks; a pinned interface
-    // stays pinned even when it disappears (SPEC 14).
-    if (app.settings.adapterIndex == 0 && app.tick % kRouteRecheckTicks == 0)
+    // SPEC 4/14: the counters always follow the default route; re-read it every
+    // 5 s. There is no pinned interface, so this is the only place it changes.
+    if (app.tick % kRouteRecheckTicks == 0) app.sampler.FollowDefaultRoute();
+
+    // SPEC 14: no default route means offline. Reset the window on both edges so
+    // the first online frame does not inherit the offline gap.
+    const bool offline = app.sampler.Index() == 0;
+    if (offline != app.offline)
     {
-        app.sampler.FollowDefaultRoute();
+        app.offline = offline;
+        app.aggregator.Reset();
     }
 
-    const AdapterRate rate = app.sampler.Sample();
+    const AdapterRate rate = offline ? AdapterRate{} : app.sampler.Sample();
     app.ball.SetRates(rate.down, rate.up);
 
     std::vector<ProcessRow> rows;
-    if (app.etw.Running())
+    if (!offline && app.etw.Running())
     {
         double external = 0;
         rows = app.aggregator.Update(app.etw.Snapshot(), TicksToSeconds(NowTicks()), external);
@@ -128,7 +134,8 @@ void OnTick(App& app)
     if (app.panel.IsVisible())
     {
         std::wstring footer;
-        if (!app.etw.Running()) footer = L"ETW 未启动：" + app.etw.Error();
+        if (offline) footer = L"断网 · 等待默认路由恢复";
+        else if (!app.etw.Running()) footer = L"ETW 未启动：" + app.etw.Error();
         else footer = L"ETW · " + app.etw.EnableMode() + L" · " +
                       std::to_wstring(app.etw.EventCount()) + L" 事件";
 
@@ -177,8 +184,17 @@ LRESULT CALLBACK HostProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lParam)
     case WM_POWERBROADCAST:
         if (wParam == PBT_APMRESUMEAUTOMATIC || wParam == PBT_APMRESUMESUSPEND)
         {
-            app->sampler.ResetBaseline();
-            app->aggregator.Reset();
+            // SPEC 14: the kernel session does not survive sleep, so rebuild it.
+            // Repeated resume messages within 3 s are one wake-up.
+            const int64_t now = NowTicks();
+            if (app->lastResumeTicks == 0 || TicksToSeconds(now - app->lastResumeTicks) > 3.0)
+            {
+                app->lastResumeTicks = now;
+                app->etw.Stop();
+                app->etw.Start(kEtwSession);
+                app->sampler.ResetBaseline();
+                app->aggregator.Reset();
+            }
         }
         return TRUE;
 
@@ -445,7 +461,6 @@ int APIENTRY wWinMain(HINSTANCE instance, HINSTANCE, LPWSTR, int)
 
     App app;
     g_app = &app;
-    app.settings = LoadSettings();
 
     WNDCLASSEXW hostClass{};
     hostClass.cbSize = sizeof(hostClass);
@@ -462,8 +477,7 @@ int APIENTRY wWinMain(HINSTANCE instance, HINSTANCE, LPWSTR, int)
         return 1;
     }
 
-    if (app.settings.adapterIndex != 0) app.sampler.Select(app.settings.adapterIndex);
-    else app.sampler.FollowDefaultRoute();
+    app.sampler.FollowDefaultRoute();
 
     app.etw.Start(kEtwSession);
 
