@@ -14,6 +14,10 @@ namespace NetSpeedMonitor;
 
 public partial class MainWindow : Window
 {
+    private const double BallSize = 76;
+    private const double PanelWidth = 280;
+    private const double PanelHeight = 348;
+
     private readonly AdapterSampler _sampler = new();
     private readonly DispatcherTimer _timer;
     private readonly ProcessAggregator _aggregator;
@@ -23,6 +27,13 @@ public partial class MainWindow : Window
     private EtwSampler _etw = new();
     private bool _etwRunning;
     private bool _offline;
+    private bool _expanded;
+    private bool _ballPressed;
+    private bool _ballDragged;
+    private Point _pressScreen;
+    private double _ballLeft;
+    private double _ballTop;
+    private double _suppressCollapseUntil = double.NegativeInfinity;
     private double _now;
     private double _lastConnectionRefresh = double.NegativeInfinity;
     private double _lastRouteCheck = double.NegativeInfinity;
@@ -45,7 +56,86 @@ public partial class MainWindow : Window
         _timer.Tick += (_, _) => Tick();
         _timer.Start();
 
+        Deactivated += OnDeactivated;
         Closed += OnClosed;
+
+        StartAsBall();
+    }
+
+    private static double Now => Stopwatch.GetTimestamp() / (double)Stopwatch.Frequency;
+
+    private void StartAsBall()
+    {
+        _ballLeft = Left;
+        _ballTop = Top;
+
+        Width = BallSize;
+        Height = BallSize;
+
+        PanelRoot.Visibility = Visibility.Collapsed;
+        BallRoot.Visibility = Visibility.Visible;
+    }
+
+    /// <summary>
+    /// Panel -> ball. The ball lands at the centre of the panel so it does not
+    /// jump to a stale position after the panel was dragged.
+    /// </summary>
+    private void Collapse()
+    {
+        if (!_expanded) return;
+        _expanded = false;
+
+        _ballLeft = Left;
+        _ballTop = Top;
+        ClampBall();
+
+        Width = BallSize;
+        Height = BallSize;
+        Left = _ballLeft;
+        Top = _ballTop;
+
+        PanelRoot.Visibility = Visibility.Collapsed;
+        BallRoot.Visibility = Visibility.Visible;
+    }
+
+    /// <summary>Ball -> panel, anchored at the ball's top-left corner.</summary>
+    private void Expand()
+    {
+        if (_expanded) return;
+        _expanded = true;
+
+        Rect work = SystemParameters.WorkArea;
+
+        double left = Math.Max(work.Left, Math.Min(_ballLeft, work.Right - PanelWidth));
+        double top = Math.Max(work.Top, Math.Min(_ballTop, work.Bottom - PanelHeight));
+
+        Width = PanelWidth;
+        Height = PanelHeight;
+        Left = left;
+        Top = top;
+
+        PanelRoot.Visibility = Visibility.Visible;
+        BallRoot.Visibility = Visibility.Collapsed;
+        Activate();
+    }
+
+    private void ClampBall()
+    {
+        Rect work = SystemParameters.WorkArea;
+        _ballLeft = Math.Max(work.Left, Math.Min(_ballLeft, work.Right - BallSize));
+        _ballTop = Math.Max(work.Top, Math.Min(_ballTop, work.Bottom - BallSize));
+    }
+
+    private void OnDeactivated(object? sender, EventArgs e)
+    {
+        if (!_expanded) return;
+
+        // The adapter dropdown is its own window; opening it must not collapse
+        // the panel. Hiding to the tray also deactivates, so skip that too.
+        if (AdapterPicker.IsDropDownOpen) return;
+        if (Now < _suppressCollapseUntil) return;
+
+        Collapse();
     }
 
     protected override void OnSourceInitialized(EventArgs e)
@@ -230,9 +320,9 @@ public partial class MainWindow : Window
         (double down, double up) = _sampler.Sample();
 
         DownMain.Text = FormatMegabytes(down);
-        DownMbps.Text = $"{down * 8 / 1_000_000:0.0} Mbps";
         UpMain.Text = FormatMegabytes(up);
-        UpMbps.Text = $"{up * 8 / 1_000_000:0.0} Mbps";
+        BallUp.Text = $"↑ {FormatMegabytes(up)}";
+        BallDown.Text = $"↓ {FormatMegabytes(down)}";
         Trend.Push(down);
 
         // No default route: the totals are already zero, and any rows left over
@@ -336,6 +426,14 @@ public partial class MainWindow : Window
     {
         if (e.ChangedButton != MouseButton.Left) return;
 
+        if (!_expanded)
+        {
+            _ballPressed = true;
+            _ballDragged = false;
+            _pressScreen = PointToScreen(e.GetPosition(this));
+            return;
+        }
+
         // The adapter dropdown lives in the drag area; without this the press
         // that opens it would also start a window drag.
         if (e.OriginalSource is DependencyObject source && IsInside<ComboBox>(source)) return;
@@ -348,6 +446,54 @@ public partial class MainWindow : Window
         {
             // Mouse was released between the event and the drag; nothing to do.
         }
+
+        // The panel moved: the ball takes over its top-left corner on collapse.
+        _ballLeft = Left;
+        _ballTop = Top;
+        ClampBall();
+    }
+
+    /// <summary>
+    /// The ball needs click and drag on the same button, so the drag only starts
+    /// after the pointer travels a few pixels; anything shorter is a click.
+    /// </summary>
+    private void OnWindowMouseMove(object sender, MouseEventArgs e)
+    {
+        if (!_ballPressed || _ballDragged) return;
+        if (e.LeftButton != MouseButtonState.Pressed) return;
+
+        Point screen = PointToScreen(e.GetPosition(this));
+        if (Math.Abs(screen.X - _pressScreen.X) < 4 && Math.Abs(screen.Y - _pressScreen.Y) < 4) return;
+
+        _ballDragged = true;
+
+        try
+        {
+            DragMove();
+        }
+        catch (InvalidOperationException)
+        {
+            // Released mid-drag; the position below is still what we ended on.
+        }
+
+        _ballPressed = false;
+        _ballLeft = Left;
+        _ballTop = Top;
+        ClampBall();
+    }
+
+    private void OnWindowMouseUp(object sender, MouseButtonEventArgs e)
+    {
+        if (!_ballPressed) return;
+        _ballPressed = false;
+
+        if (_ballDragged)
+        {
+            _ballDragged = false;
+            return;
+        }
+
+        Expand();
     }
 
     private static bool IsInside<T>(DependencyObject? node) where T : DependencyObject
@@ -364,7 +510,13 @@ public partial class MainWindow : Window
         return false;
     }
 
-    private void OnCloseClick(object sender, RoutedEventArgs e) => Hide();
+    private void OnCloseClick(object sender, RoutedEventArgs e)
+    {
+        // Hiding deactivates the window; do not let that collapse the panel,
+        // otherwise the tray icon would always bring back the ball.
+        _suppressCollapseUntil = Now + 1;
+        Hide();
+    }
 
     private void OnRestartClick(object sender, RoutedEventArgs e)
     {
