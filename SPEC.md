@@ -77,12 +77,24 @@ AdapterSampler (1s)   ──> 总量 + 60s 走势
 
 ## 验收判据
 
-1. 空闲时总量与任务管理器「性能」页误差 <10%。
+1. 负载下总量与独立 API 对账误差 <10%（`Get-NetAdapterStatistics` 同窗口累计 vs 界面累计）。
+   空闲时任务管理器「性能」页与程序都是 0.00，比值无定义，不能作为判据。
 2. 浏览器播 1080p 视频，浏览器进程稳定进 Top 3。
 3. 拒绝提权启动时进入受限模式且不崩溃。
 4. 进程字节对账用「载荷对载荷」：固定 12 MB 下载，ETW 记在该 PID 上的外网字节与 curl
    自报的 `size_download` 误差 <5%。不能用 `GetIfTable2` 做参照物——它统计 L2 线缆字节
    （含 802.11 帧头、加密开销、MAC 层重传），与 ETW 的载荷字节不是同一口径。
+
+## 部署
+
+```
+dotnet publish src/NetSpeedMonitor -c Release -r win-x64 --self-contained false -o D:\githubitem\NetSpeedMonitor
+```
+
+- 产物 framework-dependent，需要本机 .NET 10 桌面运行时。
+- 同目录放 `启动 NetSpeedMonitor.bat`（CRLF、纯 ASCII、`%~dp0`），内部一次 `Start-Process -Verb RunAs`，
+  直接进提权态；直接双击 exe 则进受限模式。
+- 发布目录不是 git 仓库，源码只留在 `默认项目\NetSpeedMonitor`。
 
 ## 风险
 
