@@ -340,6 +340,16 @@ int RunEtwProbe(int seconds, const std::wstring& path)
 
     sampler.Stop(); // reads EventsLost from the stopped session
     Emit(log, L"# all=%lld\n", static_cast<long long>(sampler.AllEvents()));
+    // Per-PID totals so a single process (e.g. a curl download) can be checked
+    // against the byte count it reports itself.
+    for (const PidSnapshot& row : sampler.Snapshot())
+    {
+        Emit(log, L"# pid %u ext_in %lld ext_out %lld lb_in %lld lb_out %lld\n", row.pid,
+             static_cast<long long>(row.counters.externalIn),
+             static_cast<long long>(row.counters.externalOut),
+             static_cast<long long>(row.counters.loopbackIn),
+             static_cast<long long>(row.counters.loopbackOut));
+    }
     Emit(log, L"# done events=%lld lost=%lld tcp_ev=%lld udp_ev=%lld tcp_in=%lld udp_in=%lld\n",
          static_cast<long long>(sampler.EventCount()), static_cast<long long>(sampler.EventsLost()),
          static_cast<long long>(sampler.TcpEvents()), static_cast<long long>(sampler.UdpEvents()),
