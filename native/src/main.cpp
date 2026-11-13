@@ -38,7 +38,6 @@ struct App
     TrayIcon tray;
     Settings settings;
     std::deque<float> trend;
-    bool elevated = false;
     int tick = 0;
     HWND host = nullptr;
 };
@@ -67,7 +66,6 @@ std::wstring AdapterLabel(const App& app)
 void UpdateTooltip(App& app)
 {
     std::wstring tip = L"NetSpeedMonitor \u00B7 " + AdapterLabel(app);
-    if (!app.elevated) tip += L"（受限）";
     app.tray.SetTooltip(tip);
 }
 
@@ -130,8 +128,7 @@ void OnTick(App& app)
     if (app.panel.IsVisible())
     {
         std::wstring footer;
-        if (!app.elevated) footer = L"未提权，进程速率不可用";
-        else if (!app.etw.Running()) footer = L"ETW 未启动：" + app.etw.Error();
+        if (!app.etw.Running()) footer = L"ETW 未启动：" + app.etw.Error();
         else footer = L"ETW · " + app.etw.EnableMode() + L" · " +
                       std::to_wstring(app.etw.EventCount()) + L" 事件";
 
@@ -428,6 +425,15 @@ int APIENTRY wWinMain(HINSTANCE instance, HINSTANCE, LPWSTR, int)
 
     LocalFree(argv);
 
+    // SPEC 3: elevated only. The manifest already forces a UAC prompt, so this
+    // guard only fires when the token is stripped some other way (e.g. a
+    // launcher that recreates the process unelevated).
+    if (!IsElevated())
+    {
+        Gdiplus::GdiplusShutdown(gdiToken);
+        return 2;
+    }
+
     // Different name from the C# build so both can run side by side.
     HANDLE mutex = CreateMutexW(nullptr, TRUE, L"Local\\NetSpeedMonitor.Native");
     if (!mutex || GetLastError() == ERROR_ALREADY_EXISTS)
@@ -439,7 +445,6 @@ int APIENTRY wWinMain(HINSTANCE instance, HINSTANCE, LPWSTR, int)
 
     App app;
     g_app = &app;
-    app.elevated = IsElevated();
     app.settings = LoadSettings();
 
     WNDCLASSEXW hostClass{};
@@ -460,7 +465,7 @@ int APIENTRY wWinMain(HINSTANCE instance, HINSTANCE, LPWSTR, int)
     if (app.settings.adapterIndex != 0) app.sampler.Select(app.settings.adapterIndex);
     else app.sampler.FollowDefaultRoute();
 
-    if (app.elevated) app.etw.Start(kEtwSession);
+    app.etw.Start(kEtwSession);
 
     if (!app.ball.Create(instance, 60, 60, app.host))
     {

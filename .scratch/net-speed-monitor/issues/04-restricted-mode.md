@@ -4,7 +4,7 @@
 
 **Blocked by:** 02
 
-**Status:** done
+**Status:** superseded（2026-11-13）—— 产品决定取消受限模式，非提权不启动。C# 代码原样保留作历史，行为以 `SPEC.md` 定案 3 为准；原生版见 `native-03-elevated-only.md`。
 
 - [x] 以普通权限启动，窗口正常显示且标明受限模式
       （`nsm-04-restricted.png`：黄条 + 「进程连接 · 81 条」+ 底部「受限模式 · 进程按连接数排序」）
