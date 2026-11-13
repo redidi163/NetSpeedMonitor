@@ -8,7 +8,7 @@
 class BallWindow
 {
 public:
-    bool Create(HINSTANCE instance, int x, int y);
+    bool Create(HINSTANCE instance, int x, int y, HWND notify);
     HWND Hwnd() const { return hwnd_; }
 
     void SetRates(double downBytesPerSecond, double upBytesPerSecond);
@@ -24,6 +24,7 @@ private:
 
     HWND hwnd_ = nullptr;
     HINSTANCE instance_ = nullptr;
+    HWND notify_ = nullptr;
     double down_ = 0;
     double up_ = 0;
     int dpi_ = 96;

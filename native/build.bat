@@ -20,6 +20,7 @@ if not exist bin mkdir bin
 
 cl /nologo /O2 /std:c++20 /MT /W4 /permissive- /utf-8 /EHsc /DUNICODE /D_UNICODE ^
   src\main.cpp src\adapter.cpp src\common.cpp src\settings.cpp src\ball.cpp src\tray.cpp ^
+  src\etw.cpp src\aggregate.cpp src\panel.cpp ^
   /Fo:bin\ /Fe:bin\NetSpeedMonitor.exe ^
   /link /SUBSYSTEM:WINDOWS user32.lib gdi32.lib gdiplus.lib iphlpapi.lib shell32.lib advapi32.lib
 

@@ -42,9 +42,10 @@ void DrawRate(Graphics& graphics, const Font& arrowFont, const Font& numberFont,
 }
 } // namespace
 
-bool BallWindow::Create(HINSTANCE instance, int x, int y)
+bool BallWindow::Create(HINSTANCE instance, int x, int y, HWND notify)
 {
     instance_ = instance;
+    notify_ = notify;
 
     WNDCLASSEXW wc{};
     wc.cbSize = sizeof(wc);
@@ -208,6 +209,10 @@ LRESULT BallWindow::Handle(UINT message, WPARAM wParam, LPARAM lParam)
                          SWP_NOACTIVATE);
         }
         Render();
+        return 0;
+
+    case WM_LBUTTONUP:
+        if (notify_) PostMessageW(notify_, WM_APP + 2, 0, 0);
         return 0;
 
     case WM_DESTROY:

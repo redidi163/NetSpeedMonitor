@@ -1,10 +1,17 @@
 #include "adapter.h"
+#include "aggregate.h"
 #include "ball.h"
+#include "etw.h"
+#include "panel.h"
 #include "settings.h"
 #include "tray.h"
 
+#include <algorithm>
+#include <cstdarg>
 #include <cstdio>
 #include <cstdlib>
+#include <deque>
+#include <vector>
 
 #include <gdiplus.h>
 
@@ -18,13 +25,19 @@ constexpr UINT kTrayMessage = WM_APP + 1;
 constexpr UINT_PTR kTimerId = 1;
 constexpr int kTickMs = 1000;
 constexpr int kRouteRecheckTicks = 5; // SPEC 14: re-read the default route every 5 s
+constexpr int kTrendPoints = 60;      // SPEC 6: 60 second mini trend
+constexpr wchar_t kEtwSession[] = L"NetSpeedMonitorNative";
 
 struct App
 {
     AdapterSampler sampler;
+    EtwSampler etw;
+    ProcessAggregator aggregator;
     BallWindow ball;
+    PanelWindow panel;
     TrayIcon tray;
     Settings settings;
+    std::deque<float> trend;
     bool elevated = false;
     int tick = 0;
     HWND host = nullptr;
@@ -45,14 +58,51 @@ bool IsElevated()
     return ok && elevation.TokenIsElevated != 0;
 }
 
-void UpdateTooltip(App& app)
+std::wstring AdapterLabel(const App& app)
 {
     std::wstring name = AdapterNameOf(app.sampler.Index());
-    if (name.empty()) name = L"无接口";
+    return name.empty() ? L"无接口" : name;
+}
 
-    std::wstring tip = L"NetSpeedMonitor \u00B7 " + name;
+void UpdateTooltip(App& app)
+{
+    std::wstring tip = L"NetSpeedMonitor \u00B7 " + AdapterLabel(app);
     if (!app.elevated) tip += L"（受限）";
     app.tray.SetTooltip(tip);
+}
+
+void TogglePanel(App& app)
+{
+
+    if (app.panel.IsVisible())
+    {
+        app.panel.Show(false);
+        return;
+    }
+
+    RECT ball{};
+    if (app.ball.Hwnd()) GetWindowRect(app.ball.Hwnd(), &ball);
+
+    const int panelDpi = static_cast<int>(GetDpiForWindow(app.ball.Hwnd()));
+    app.panel.SetDpi(panelDpi);
+
+    const int panelWidth = MulDiv(280, panelDpi, 96);
+    const int panelHeight = MulDiv(348, panelDpi, 96);
+
+    int x = ball.right + 8;
+    int y = ball.top;
+
+    MONITORINFO info{sizeof(info)};
+    if (GetMonitorInfoW(MonitorFromWindow(app.ball.Hwnd(), MONITOR_DEFAULTTONEAREST), &info))
+    {
+        x = std::min(x, static_cast<int>(info.rcWork.right) - panelWidth);
+        x = std::max(x, static_cast<int>(info.rcWork.left));
+        y = std::min(y, static_cast<int>(info.rcWork.bottom) - panelHeight);
+        y = std::max(y, static_cast<int>(info.rcWork.top));
+    }
+
+    app.panel.MoveTo(x, y);
+    app.panel.Show(true);
 }
 
 void OnTick(App& app)
@@ -67,6 +117,28 @@ void OnTick(App& app)
     const AdapterRate rate = app.sampler.Sample();
     app.ball.SetRates(rate.down, rate.up);
 
+    std::vector<ProcessRow> rows;
+    if (app.etw.Running())
+    {
+        double external = 0;
+        rows = app.aggregator.Update(app.etw.Snapshot(), TicksToSeconds(NowTicks()), external);
+    }
+
+    app.trend.push_back(static_cast<float>(rate.down / 1048576.0));
+    while (static_cast<int>(app.trend.size()) > kTrendPoints) app.trend.pop_front();
+
+    if (app.panel.IsVisible())
+    {
+        std::wstring footer;
+        if (!app.elevated) footer = L"未提权，进程速率不可用";
+        else if (!app.etw.Running()) footer = L"ETW 未启动：" + app.etw.Error();
+        else footer = L"ETW · " + app.etw.EnableMode() + L" · " +
+                      std::to_wstring(app.etw.EventCount()) + L" 事件";
+
+        app.panel.SetData(AdapterLabel(app), rate.down, rate.up,
+                          std::vector<float>(app.trend.begin(), app.trend.end()), rows, footer);
+    }
+
     if (app.tick % kRouteRecheckTicks == 0) UpdateTooltip(app);
     ++app.tick;
 }
@@ -77,19 +149,21 @@ void ShowTrayMenu(App& app)
     if (!menu) return;
 
     AppendMenuW(menu, MF_STRING, 1, app.ball.IsVisible() ? L"隐藏悬浮球" : L"显示悬浮球");
+    AppendMenuW(menu, MF_STRING, 2, app.panel.IsVisible() ? L"隐藏面板" : L"显示面板");
     AppendMenuW(menu, MF_SEPARATOR, 0, nullptr);
-    AppendMenuW(menu, MF_STRING, 2, L"退出");
+    AppendMenuW(menu, MF_STRING, 3, L"退出");
 
     SetForegroundWindow(app.host);
 
     POINT cursor{};
     GetCursorPos(&cursor);
-    const int command = TrackPopupMenu(menu, TPM_RETURNCMD | TPM_RIGHTBUTTON,
-                                       cursor.x, cursor.y, 0, app.host, nullptr);
+    const int command = TrackPopupMenu(menu, TPM_RETURNCMD | TPM_RIGHTBUTTON, cursor.x, cursor.y, 0,
+                                       app.host, nullptr);
     DestroyMenu(menu);
 
     if (command == 1) app.ball.Toggle();
-    else if (command == 2) DestroyWindow(app.host);
+    else if (command == 2) TogglePanel(app);
+    else if (command == 3) DestroyWindow(app.host);
 }
 
 LRESULT CALLBACK HostProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lParam)
@@ -107,8 +181,13 @@ LRESULT CALLBACK HostProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lParam)
         if (wParam == PBT_APMRESUMEAUTOMATIC || wParam == PBT_APMRESUMESUSPEND)
         {
             app->sampler.ResetBaseline();
+            app->aggregator.Reset();
         }
         return TRUE;
+
+    case WM_APP + 2:
+        TogglePanel(*app);
+        return 0;
 
     case kTrayMessage:
         if (LOWORD(lParam) == WM_LBUTTONUP) app->ball.Toggle();
@@ -168,6 +247,143 @@ int RunProbe(int seconds)
     fflush(stdout);
     return 0;
 }
+
+// Headless ETW reconcile: cumulative external bytes per tick plus the final
+// per-PID table, so the numbers can be checked against Get-NetAdapterStatistics
+// and against a known payload size.
+void Emit(FILE* log, const wchar_t* format, ...)
+{
+    va_list args;
+    va_start(args, format);
+    vfwprintf(stdout, format, args);
+    va_end(args);
+    fflush(stdout);
+
+    if (!log) return;
+
+    va_start(args, format);
+    vfwprintf(log, format, args);
+    va_end(args);
+    fflush(log);
+}
+
+int RunEtwProbe(int seconds, const std::wstring& path)
+{
+    FILE* log = nullptr;
+    if (!path.empty()) _wfopen_s(&log, path.c_str(), L"w");
+
+    EtwSampler sampler;
+    if (!sampler.Start(kEtwSession))
+    {
+        Emit(log, L"# etw failed: %ls\n", sampler.Error().c_str());
+        return 1;
+    }
+
+    ProcessAggregator aggregator;
+    Emit(log, L"# etw %ls\n", sampler.EnableMode().c_str());
+    Emit(log, L"# tick ext_in ext_out events\n");
+
+    int64_t lastIn = 0;
+    int64_t lastOut = 0;
+    int64_t cumulativeIn = 0;
+    int64_t cumulativeOut = 0;
+
+    for (int i = 0; i < seconds; ++i)
+    {
+        Sleep(1000);
+
+        int64_t inNow = 0;
+        int64_t outNow = 0;
+        for (const PidSnapshot& row : sampler.Snapshot())
+        {
+            inNow += row.counters.externalIn;
+            outNow += row.counters.externalOut;
+        }
+
+        // PID reuse resets a counter to zero; without clamping, the negative
+        // delta eats previously counted bytes.
+        if (inNow >= lastIn) cumulativeIn += inNow - lastIn;
+        if (outNow >= lastOut) cumulativeOut += outNow - lastOut;
+        lastIn = inNow;
+        lastOut = outNow;
+
+        double external = 0;
+        const std::vector<ProcessRow> rows =
+            aggregator.Update(sampler.Snapshot(), TicksToSeconds(NowTicks()), external);
+
+        Emit(log, L"T %d %lld %lld %lld\n", i, static_cast<long long>(cumulativeIn),
+             static_cast<long long>(cumulativeOut), static_cast<long long>(sampler.EventCount()));
+        for (const ProcessRow& row : rows)
+        {
+            Emit(log, L"  R %ls %ls %ls\n", row.name.c_str(), row.downText.c_str(),
+                 row.upText.c_str());
+        }
+    }
+
+    sampler.Stop(); // reads EventsLost from the stopped session
+    Emit(log, L"# all=%lld\n", static_cast<long long>(sampler.AllEvents()));
+    Emit(log, L"# done events=%lld lost=%lld tcp_ev=%lld udp_ev=%lld tcp_in=%lld udp_in=%lld\n",
+         static_cast<long long>(sampler.EventCount()), static_cast<long long>(sampler.EventsLost()),
+         static_cast<long long>(sampler.TcpEvents()), static_cast<long long>(sampler.UdpEvents()),
+         static_cast<long long>(sampler.TcpExternalIn()),
+         static_cast<long long>(sampler.UdpExternalIn()));
+    for (int id = 0; id < 64; ++id)
+    {
+        if (sampler.IdCount(id) == 0) continue;
+        Emit(log, L"# id %d = %lld\n", id, static_cast<long long>(sampler.IdCount(id)));
+    }
+    if (log) fclose(log);
+    return 0;
+}
+
+int RunEtwDump(int seconds, const std::wstring& path)
+{
+    EtwSampler::SetDump(path, 24);
+
+    EtwSampler sampler;
+    const bool started = sampler.Start(kEtwSession);
+
+    {
+        FILE* out = nullptr;
+        _wfopen_s(&out, path.c_str(), L"a");
+        if (out)
+        {
+            fwprintf(out, L"# started=%d mode=%ls error=%ls\n", started ? 1 : 0,
+                     sampler.EnableMode().c_str(), sampler.Error().c_str());
+            fclose(out);
+        }
+    }
+
+    if (!started)
+    {
+        printf("# etw failed: %ls\n", sampler.Error().c_str());
+        return 1;
+    }
+
+    Sleep(seconds * 1000);
+
+    // Elevated runs cannot redirect stdout, so the summary goes next to the
+    // dump file as well.
+    FILE* out = nullptr;
+    _wfopen_s(&out, path.c_str(), L"a");
+    if (out)
+    {
+        fwprintf(out, L"# etw %ls events=%lld\n", sampler.EnableMode().c_str(),
+                 static_cast<long long>(sampler.EventCount()));
+        for (const PidSnapshot& row : sampler.Snapshot())
+        {
+            fwprintf(out, L"P %u lb_in=%lld lb_out=%lld ext_in=%lld ext_out=%lld\n", row.pid,
+                     static_cast<long long>(row.counters.loopbackIn),
+                     static_cast<long long>(row.counters.loopbackOut),
+                     static_cast<long long>(row.counters.externalIn),
+                     static_cast<long long>(row.counters.externalOut));
+        }
+        fclose(out);
+    }
+
+    sampler.Stop();
+    return 0;
+}
 } // namespace
 
 int APIENTRY wWinMain(HINSTANCE instance, HINSTANCE, LPWSTR, int)
@@ -180,6 +396,7 @@ int APIENTRY wWinMain(HINSTANCE instance, HINSTANCE, LPWSTR, int)
 
     int argc = 0;
     LPWSTR* argv = CommandLineToArgvW(GetCommandLineW(), &argc);
+
     if (argc >= 2 && wcscmp(argv[1], L"--probe") == 0)
     {
         const int seconds = argc >= 3 ? _wtoi(argv[2]) : 30;
@@ -188,6 +405,27 @@ int APIENTRY wWinMain(HINSTANCE instance, HINSTANCE, LPWSTR, int)
         Gdiplus::GdiplusShutdown(gdiToken);
         return code;
     }
+
+    if (argc >= 2 && wcscmp(argv[1], L"--etw-probe") == 0)
+    {
+        const int seconds = argc >= 3 ? _wtoi(argv[2]) : 30;
+        const std::wstring path = argc >= 4 ? argv[3] : L"";
+        const int code = RunEtwProbe(seconds, path);
+        LocalFree(argv);
+        Gdiplus::GdiplusShutdown(gdiToken);
+        return code;
+    }
+
+    if (argc >= 2 && wcscmp(argv[1], L"--etw-dump") == 0)
+    {
+        const int seconds = argc >= 3 ? _wtoi(argv[2]) : 10;
+        const std::wstring path = argc >= 4 ? argv[3] : L"etw-dump.txt";
+        const int code = RunEtwDump(seconds, path);
+        LocalFree(argv);
+        Gdiplus::GdiplusShutdown(gdiToken);
+        return code;
+    }
+
     LocalFree(argv);
 
     // Different name from the C# build so both can run side by side.
@@ -211,8 +449,8 @@ int APIENTRY wWinMain(HINSTANCE instance, HINSTANCE, LPWSTR, int)
     hostClass.lpszClassName = L"NSM.Host";
     RegisterClassExW(&hostClass);
 
-    app.host = CreateWindowExW(0, L"NSM.Host", L"NetSpeedMonitor", WS_OVERLAPPED,
-                               0, 0, 0, 0, nullptr, nullptr, instance, nullptr);
+    app.host = CreateWindowExW(0, L"NSM.Host", L"NetSpeedMonitor", WS_OVERLAPPED, 0, 0, 0, 0,
+                               nullptr, nullptr, instance, nullptr);
     if (!app.host)
     {
         Gdiplus::GdiplusShutdown(gdiToken);
@@ -222,18 +460,26 @@ int APIENTRY wWinMain(HINSTANCE instance, HINSTANCE, LPWSTR, int)
     if (app.settings.adapterIndex != 0) app.sampler.Select(app.settings.adapterIndex);
     else app.sampler.FollowDefaultRoute();
 
-    if (!app.ball.Create(instance, 60, 60))
+    if (app.elevated) app.etw.Start(kEtwSession);
+
+    if (!app.ball.Create(instance, 60, 60, app.host))
     {
         DestroyWindow(app.host);
         Gdiplus::GdiplusShutdown(gdiToken);
         return 1;
     }
 
+    app.panel.Create(instance, 200, 60);
+
     app.tray.Create(instance, app.host, kTrayMessage);
     UpdateTooltip(app);
 
     SetTimer(app.host, kTimerId, kTickMs, nullptr);
     OnTick(app);
+
+    // Diagnostic: open the panel at startup so it can be captured without
+    // synthesising a click (an elevated window ignores injected input).
+    if (wcsstr(GetCommandLineW(), L"--panel") != nullptr) TogglePanel(app);
 
     MSG message{};
     while (GetMessageW(&message, nullptr, 0, 0) > 0)
@@ -242,6 +488,7 @@ int APIENTRY wWinMain(HINSTANCE instance, HINSTANCE, LPWSTR, int)
         DispatchMessageW(&message);
     }
 
+    app.etw.Stop();
     app.tray.Remove();
     g_app = nullptr;
     CloseHandle(mutex);
