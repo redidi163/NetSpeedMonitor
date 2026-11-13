@@ -202,6 +202,11 @@ LRESULT CALLBACK HostProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lParam)
         TogglePanel(*app);
         return 0;
 
+    case WM_APP + 3:
+        // Panel finished a drag: the ball sits on its top-left corner.
+        app->ball.MoveTo(static_cast<int>(wParam), static_cast<int>(lParam));
+        return 0;
+
     case kTrayMessage:
         if (LOWORD(lParam) == WM_LBUTTONUP) app->ball.Toggle();
         else if (LOWORD(lParam) == WM_RBUTTONUP) ShowTrayMenu(*app);
@@ -489,6 +494,7 @@ int APIENTRY wWinMain(HINSTANCE instance, HINSTANCE, LPWSTR, int)
     }
 
     app.panel.Create(instance, 200, 60);
+    app.panel.SetNotify(app.host, WM_APP + 3);
 
     app.tray.Create(instance, app.host, kTrayMessage);
     UpdateTooltip(app);

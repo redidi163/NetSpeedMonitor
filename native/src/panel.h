@@ -24,6 +24,10 @@ public:
     bool Toggle();
     bool IsVisible() const;
 
+    // After a drag the panel reports its new top-left corner to `host` with
+    // `message` (wParam = x, lParam = y) so the ball can follow it.
+    void SetNotify(HWND host, UINT message);
+
     void SetData(const std::wstring& adapterName, double down, double up,
                  const std::vector<float>& trend, const std::vector<ProcessRow>& rows,
                  const std::wstring& footer);
@@ -35,11 +39,24 @@ private:
     static LRESULT CALLBACK StaticProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lParam);
     LRESULT Handle(UINT message, WPARAM wParam, LPARAM lParam);
     void Render();
+    bool InCloseButton(int x, int y) const;
 
     HWND hwnd_ = nullptr;
     HINSTANCE instance_ = nullptr;
+    HWND host_ = nullptr;
+    UINT notifyMessage_ = 0;
     int dpi_ = 96;
     bool visible_ = false;
+
+    // Collapse-on-outside-click. The panel is WS_EX_NOACTIVATE so it never takes
+    // focus; instead it remembers who was foreground when it opened and polls.
+    HWND foregroundAtOpen_ = nullptr;
+
+    bool dragging_ = false;
+    bool dragged_ = false;
+    bool closePressed_ = false;
+    POINT dragStart_{};
+    POINT dragOrigin_{};
 
     std::wstring adapterName_;
     std::wstring footer_;

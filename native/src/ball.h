@@ -12,6 +12,7 @@ public:
     HWND Hwnd() const { return hwnd_; }
 
     void SetRates(double downBytesPerSecond, double upBytesPerSecond);
+    void MoveTo(int x, int y);
     void Show(bool visible);
     bool Toggle();
     bool IsVisible() const;

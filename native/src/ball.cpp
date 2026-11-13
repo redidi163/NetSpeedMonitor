@@ -87,6 +87,12 @@ void BallWindow::Show(bool visible)
     visible_ = visible;
 }
 
+void BallWindow::MoveTo(int x, int y)
+{
+    if (!hwnd_) return;
+    SetWindowPos(hwnd_, HWND_TOPMOST, x, y, 0, 0, SWP_NOSIZE | SWP_NOACTIVATE);
+}
+
 bool BallWindow::Toggle()
 {
     Show(!visible_);

@@ -5,6 +5,7 @@
 #include <windowsx.h>
 
 #include <algorithm>
+#include <cstdlib>
 
 #pragma comment(lib, "gdiplus.lib")
 #pragma comment(lib, "shcore.lib")
@@ -22,6 +23,9 @@ constexpr int kRowsTop = 162;
 constexpr int kNameWidth = 164;
 constexpr int kDownWidth = 40;
 constexpr int kUpWidth = 34;
+constexpr int kDragThresholdDip = 6;
+constexpr UINT_PTR kForegroundTimerId = 1;
+constexpr UINT kForegroundPollMs = 200;
 
 const Color kBackground(0xE6, 0x14, 0x16, 0x1A);
 const Color kBorder(0x2A, 0xFF, 0xFF, 0xFF);
@@ -167,14 +171,29 @@ void PanelWindow::Show(bool visible)
     if (visible)
     {
         Render();
+        // WS_EX_NOACTIVATE keeps the panel from stealing focus; the price is
+        // that it never gets WM_ACTIVATE, so the outside click is detected by
+        // comparing the foreground window against this snapshot.
+        foregroundAtOpen_ = GetForegroundWindow();
         ShowWindow(hwnd_, SW_SHOWNOACTIVATE);
+        SetTimer(hwnd_, kForegroundTimerId, kForegroundPollMs, nullptr);
     }
     else
     {
+        KillTimer(hwnd_, kForegroundTimerId);
         ShowWindow(hwnd_, SW_HIDE);
+        dragging_ = false;
+        dragged_ = false;
+        closePressed_ = false;
     }
 
     visible_ = visible;
+}
+
+void PanelWindow::SetNotify(HWND host, UINT message)
+{
+    host_ = host;
+    notifyMessage_ = message;
 }
 
 bool PanelWindow::Toggle()
@@ -376,25 +395,96 @@ LRESULT CALLBACK PanelWindow::StaticProc(HWND hwnd, UINT message, WPARAM wParam,
     return DefWindowProcW(hwnd, message, wParam, lParam);
 }
 
+bool PanelWindow::InCloseButton(int x, int y) const
+{
+    const int closeLeft = MulDiv(kPanelWidthDip - kPadding - 14, dpi_, 96);
+    const int closeTop = MulDiv(kTop, dpi_, 96);
+    const int closeSize = MulDiv(18, dpi_, 96);
+    return x >= closeLeft && x <= closeLeft + closeSize && y >= closeTop &&
+           y <= closeTop + closeSize;
+}
+
 LRESULT PanelWindow::Handle(UINT message, WPARAM wParam, LPARAM lParam)
 {
     switch (message)
     {
-    case WM_LBUTTONUP:
+    case WM_TIMER:
+        if (wParam == kForegroundTimerId && visible_ && !dragging_)
+        {
+            const HWND foreground = GetForegroundWindow();
+            if (foreground != foregroundAtOpen_ && foreground != hwnd_) Show(false);
+        }
+        return 0;
+
+    case WM_LBUTTONDOWN:
     {
         const int x = GET_X_LPARAM(lParam);
         const int y = GET_Y_LPARAM(lParam);
-        const int scale = dpi_;
-        const int closeLeft = MulDiv(kPanelWidthDip - kPadding - 14, scale, 96);
-        const int closeTop = MulDiv(kTop, scale, 96);
-        const int closeSize = MulDiv(18, scale, 96);
-        if (x >= closeLeft && x <= closeLeft + closeSize && y >= closeTop &&
-            y <= closeTop + closeSize)
+        closePressed_ = InCloseButton(x, y);
+        if (!closePressed_)
         {
-            Show(false);
+            POINT point{x, y};
+            ClientToScreen(hwnd_, &point);
+            RECT rect{};
+            GetWindowRect(hwnd_, &rect);
+            dragStart_ = point;
+            dragOrigin_ = POINT{rect.left, rect.top};
+            dragging_ = true;
+            dragged_ = false;
+            SetCapture(hwnd_);
         }
         return 0;
     }
+
+    case WM_MOUSEMOVE:
+        if (dragging_)
+        {
+            POINT point{GET_X_LPARAM(lParam), GET_Y_LPARAM(lParam)};
+            ClientToScreen(hwnd_, &point);
+            const int dx = point.x - dragStart_.x;
+            const int dy = point.y - dragStart_.y;
+            const int threshold = MulDiv(kDragThresholdDip, dpi_, 96);
+            if (!dragged_ && (std::abs(dx) >= threshold || std::abs(dy) >= threshold))
+            {
+                dragged_ = true;
+            }
+            if (dragged_)
+            {
+                SetWindowPos(hwnd_, HWND_TOPMOST, dragOrigin_.x + dx, dragOrigin_.y + dy, 0, 0,
+                             SWP_NOSIZE | SWP_NOACTIVATE);
+            }
+        }
+        return 0;
+
+    case WM_LBUTTONUP:
+    {
+        const bool wasDragging = dragging_;
+        const bool moved = dragged_;
+        const bool onClose = closePressed_;
+        if (wasDragging) ReleaseCapture();
+        dragging_ = false;
+        dragged_ = false;
+        closePressed_ = false;
+
+        if (onClose && !moved)
+        {
+            Show(false);
+            return 0;
+        }
+
+        if (wasDragging && moved && host_ && notifyMessage_)
+        {
+            const POINT position = Position();
+            PostMessageW(host_, notifyMessage_, static_cast<WPARAM>(position.x),
+                         static_cast<LPARAM>(position.y));
+        }
+        return 0;
+    }
+
+    case WM_CAPTURECHANGED:
+        dragging_ = false;
+        dragged_ = false;
+        return 0;
 
     case WM_DPICHANGED:
         dpi_ = HIWORD(wParam);
