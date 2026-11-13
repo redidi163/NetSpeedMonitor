@@ -1,20 +1,18 @@
 # NetSpeedMonitor
 
-WPF / .NET 10，单进程桌面应用。规格见 `SPEC.md`，工单见 `.scratch/net-speed-monitor/issues/`。
+C++20 + Win32 桌面应用（原生版为交付物），C#/WPF 版源码保留作行为基准。规格见 `SPEC.md`，工单见 `.scratch/net-speed-monitor/issues/`。
 
 ## 命令
 
-- 构建：`dotnet build`
-- 运行：`dotnet run --project src/NetSpeedMonitor`
-- 测试：`dotnet test`
-- 发布：`dotnet publish src/NetSpeedMonitor -c Release -r win-x64 --self-contained false -o D:\githubitem\NetSpeedMonitor`
 - 原生构建：`native\build.bat`（vcvars64 + cl，产物 `native\bin\NetSpeedMonitor.exe`）
+- 发布：构建后把 `native\bin\NetSpeedMonitor.exe` 复制到 `D:\githubitem\NetSpeedMonitor\`
+- C# 基准版（仅历史参考）：`dotnet build` / `dotnet run --project src/NetSpeedMonitor` / `dotnet test`
 
 ## 结构
 
-- `src/NetSpeedMonitor/` 应用本体（C# 版，作为行为基准保留）
-- `tests/NetSpeedMonitor.Tests/` 单元测试
-- `native/` C++ 重写版；工单 `native-0*.md`，与 C# 版同名工单区分
+- `native/` C++ 交付物；工单 `native-0*.md`，与 C# 版同名工单区分
+- `src/NetSpeedMonitor/` C#/WPF 历史基准，不再发布
+- `tests/NetSpeedMonitor.Tests/` C# 版单元测试（历史）
 - `.scratch/net-speed-monitor/issues/` 工单，一单一文件
 
 ## 约束

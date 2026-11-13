@@ -87,12 +87,13 @@ AdapterSampler (1s)   ──> 总量 + 60s 走势
 ## 部署
 
 ```
-dotnet publish src/NetSpeedMonitor -c Release -r win-x64 --self-contained false -o D:\githubitem\NetSpeedMonitor
+native\build.bat
+copy /y native\bin\NetSpeedMonitor.exe D:\githubitem\NetSpeedMonitor\
 ```
 
-- 产物 framework-dependent，需要本机 .NET 10 桌面运行时。
-- 同目录放 `启动 NetSpeedMonitor.bat`（CRLF、纯 ASCII、`%~dp0`），内部一次 `Start-Process -Verb RunAs`，
-  直接进提权态；直接双击 exe 则进受限模式。
+- 单个 exe（约 277 KB），`/MT` 静态链接，不依赖 .NET 或 VC 运行时。
+- exe 内嵌 manifest `requireAdministrator`：双击 exe 或 bat 都会弹 UAC，拒绝则不启动。
+- 同目录放 `启动 NetSpeedMonitor.bat`（CRLF、纯 ASCII、`%~dp0`），内容只有一行 `start`。
 - 发布目录不是 git 仓库，源码只留在 `默认项目\NetSpeedMonitor`。
 
 ## 风险
