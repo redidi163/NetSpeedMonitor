@@ -39,32 +39,7 @@ bool AppsUseLightTheme(){
 
 // The overlay is topmost, so it has to get out of the way of anything that
 // covers the taskbar's monitor: a full-screen video or game would otherwise
-// have the readout floating on top of it.
-bool FullscreenOnTaskbarMonitor(HWND self, HWND taskbar)
-{
-    const HWND foreground = GetForegroundWindow();
-    if (!foreground || foreground == self || foreground == taskbar) return false;
-
-    wchar_t className[64]{};
-    GetClassNameW(foreground, className, 64);
-    if (_wcsicmp(className, L"Progman") == 0 || _wcsicmp(className, L"WorkerW") == 0 ||
-        _wcsicmp(className, L"Shell_TrayWnd") == 0 ||
-        _wcsicmp(className, L"Shell_SecondaryTrayWnd") == 0)
-        return false;
-
-    RECT window{};
-    if (!GetWindowRect(foreground, &window)) return false;
-
-    MONITORINFO info{};
-    info.cbSize = sizeof(info);
-    if (!GetMonitorInfoW(MonitorFromWindow(taskbar, MONITOR_DEFAULTTONEAREST), &info)) return false;
-
-    const RECT& screen = info.rcMonitor;
-    constexpr int kSlack = 2; // shells round their bounds by a pixel or two
-    return window.left <= screen.left + kSlack && window.top <= screen.top + kSlack &&
-           window.right >= screen.right - kSlack && window.bottom >= screen.bottom - kSlack;
-}
-
+// have the readout floating on top of it. See FullscreenOnMonitor().
 // An auto-hidden taskbar slides off the monitor instead of hiding, so
 // IsWindowVisible stays true; treat "not fully on its monitor" as hidden.
 bool TaskbarOnScreen(HWND taskbar)
@@ -191,7 +166,7 @@ void TaskbarWindow::Update(double downBytesPerSecond, double upBytesPerSecond)
 
     // Hide with the taskbar (auto-hide, Win+D) and under a full-screen app.
     if (!IsWindowVisible(taskbar_) || !TaskbarOnScreen(taskbar_) ||
-        FullscreenOnTaskbarMonitor(hwnd_, taskbar_))
+        FullscreenOnMonitor(taskbar_))
     {
         if (IsWindowVisible(hwnd_)) ShowWindow(hwnd_, SW_HIDE);
         return;
@@ -219,8 +194,8 @@ void TaskbarWindow::Update(double downBytesPerSecond, double upBytesPerSecond)
     GlobalMemoryStatusEx(&memory);
 
     wchar_t buffer[128];
-    swprintf_s(buffer, L"\u2191%ls \u2193%ls MB/s \u00B7 \u5185\u5B58 %lu%% \u00B7 CPU %.0f%%",
-               FormatMBps(upBytesPerSecond).c_str(), FormatMBps(downBytesPerSecond).c_str(),
+    swprintf_s(buffer, L"\u2191%ls \u2193%ls KB/s \u00B7 \u5185\u5B58 %lu%% \u00B7 CPU %.0f%%",
+               FormatKBps(upBytesPerSecond).c_str(), FormatKBps(downBytesPerSecond).c_str(),
                static_cast<unsigned long>(memory.dwMemoryLoad), cpu);
 
     if (text_ == buffer) return;

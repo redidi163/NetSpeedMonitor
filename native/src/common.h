@@ -33,5 +33,10 @@ inline double TicksToSeconds(int64_t delta)
     return static_cast<double>(delta) / static_cast<double>(freq.QuadPart);
 }
 
-// "1.89" — the ball always speaks MB/s, two decimals.
-std::wstring FormatMBps(double bytesPerSecond);
+// "41.0" — every readout speaks KB/s, one decimal (SPEC 8).
+std::wstring FormatKBps(double bytesPerSecond);
+
+// True when the foreground window covers the monitor `reference` sits on: a
+// full-screen video, game or presentation. Shell windows (desktop, taskbar) and
+// our own windows do not count, so the readouts stay visible on the desktop.
+bool FullscreenOnMonitor(HWND reference);

@@ -122,6 +122,7 @@ void OnTick(App& app)
 
     const AdapterRate rate = offline ? AdapterRate{} : app.sampler.Sample();
     app.ball.SetRates(rate.down, rate.up);
+    app.ball.UpdateFullscreen(FullscreenOnMonitor(app.ball.Hwnd()));
     app.taskbar.Update(rate.down, rate.up);
 
     std::vector<ProcessRow> rows;
@@ -131,7 +132,7 @@ void OnTick(App& app)
         rows = app.aggregator.Update(app.etw.Snapshot(), TicksToSeconds(NowTicks()), external);
     }
 
-    app.trend.push_back(static_cast<float>(rate.down / 1048576.0));
+    app.trend.push_back(static_cast<float>(rate.down / 1024.0));
     while (static_cast<int>(app.trend.size()) > kTrendPoints) app.trend.pop_front();
 
     if (app.panel.IsVisible())

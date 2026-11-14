@@ -3,8 +3,8 @@
 #include "common.h"
 
 // One-line readout docked into the taskbar, left of the clock:
-//   ↑0.12 ↓1.20 MB/s · 内存 42% · CPU 12%
-// Speed comes from the same AdapterSampler as the ball (SPEC 8: MB/s only);
+//   ↑41.0 ↓1496.0 KB/s · 内存 42% · CPU 12%
+// Speed comes from the same AdapterSampler as the ball (SPEC 8: KB/s only);
 // memory and CPU are system-wide percentages sampled on the same 1 s tick.
 class TaskbarWindow
 {

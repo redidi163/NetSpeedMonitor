@@ -83,8 +83,21 @@ void BallWindow::SetRates(double downBytesPerSecond, double upBytesPerSecond)
 void BallWindow::Show(bool visible)
 {
     if (!hwnd_) return;
-    ShowWindow(hwnd_, visible ? SW_SHOWNOACTIVATE : SW_HIDE);
     visible_ = visible;
+    ApplyVisibility();
+}
+
+void BallWindow::ApplyVisibility()
+{
+    if (!hwnd_) return;
+    ShowWindow(hwnd_, (visible_ && !suppressed_) ? SW_SHOWNOACTIVATE : SW_HIDE);
+}
+
+void BallWindow::UpdateFullscreen(bool fullscreen)
+{
+    if (!hwnd_ || fullscreen == suppressed_) return;
+    suppressed_ = fullscreen;
+    ApplyVisibility();
 }
 
 void BallWindow::MoveTo(int x, int y)
@@ -101,7 +114,9 @@ bool BallWindow::Toggle()
 
 bool BallWindow::IsVisible() const
 {
-    return visible_ && hwnd_ && IsWindowVisible(hwnd_);
+    // User intent, not the window's current state: a full-screen app hides the
+    // ball without changing what the tray menu should say.
+    return visible_ && hwnd_ != nullptr;
 }
 
 int BallWindow::PixelSize() const
@@ -163,16 +178,16 @@ void BallWindow::Render()
         Font upArrowFont(&symbolFamily, 12.0f * scale, FontStyleRegular, UnitPixel);
         Font downArrowFont(&symbolFamily, 13.0f * scale, FontStyleRegular, UnitPixel);
 
-        DrawRate(graphics, upArrowFont, upFont, L"\u2191", FormatMBps(up_), kUp,
+        DrawRate(graphics, upArrowFont, upFont, L"\u2191", FormatKBps(up_), kUp,
                  size * 0.27f, size);
-        DrawRate(graphics, downArrowFont, downFont, L"\u2193", FormatMBps(down_), kDown,
+        DrawRate(graphics, downArrowFont, downFont, L"\u2193", FormatKBps(down_), kDown,
                  size * 0.73f, size);
 
         StringFormat unitFormat;
         unitFormat.SetAlignment(StringAlignmentCenter);
         unitFormat.SetLineAlignment(StringAlignmentCenter);
         SolidBrush unitBrush(kSecondary);
-        graphics.DrawString(L"MB/s", -1, &unitFont,
+        graphics.DrawString(L"KB/s", -1, &unitFont,
                             PointF(size / 2.0f, size * 0.5f), &unitFormat, &unitBrush);
     }
 
