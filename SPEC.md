@@ -2,7 +2,8 @@
 
 ## 目标
 
-常驻托盘的小窗，实时显示默认路由网卡的上下行速率，以及当前占用带宽最大的进程（Top 5）。
+常驻托盘的小窗，实时显示默认路由网卡的上下行速率，以及当前占用带宽最大的进程（Top 5）；
+任务栏右侧常显一行网速 / 内存 / CPU 读数。
 
 ## 非目标（第一期）
 
@@ -26,12 +27,13 @@
 | 8 | 单位 | 只用 MB/s，不显示 Mbps 副行 |
 | 9 | 排序 | 3 秒滑动平均排序，显示 1 秒瞬时值 |
 | 10 | 交付 | framework-dependent；一期不做自启 |
-| 11 | 验收 | 总量误差 <10%、浏览器进 Top 3、受限模式不崩 |
+| 11 | 验收 | 总量误差 <10%、浏览器进 Top 3、拒绝提权不启动、载荷对账 <5% |
 | 12 | 窗口 | 球 76×76，面板 280×348（总量 + 走势 + Top 5）；面板可拖动（位移 ≥6 px 才生效），拖完球落在面板左上角；点面板外任一窗口 250 ms 内收起；托盘单击切换显示 |
 | 13 | 受限模式 | 不做。非提权直接不启动（C# 版 04 工单已 superseded） |
 | 14 | 边界 | 5s 重查默认路由；唤醒重建会话；断网显示 0；进程退出延迟 5s 移除 |
 | 15 | 进程名 | 只显示 exe 名，无图标、无友好名 |
 | 16 | 配置 | 无。不落盘任何状态；X = 隐藏，退出走托盘 |
+| 17 | 任务栏读数 | 任务栏右侧常显一行 `↑0.12 ↓1.20 MB/s · 内存 42% · CPU 12%`；字体 11 pt，颜色跟系统浅/深色（启动读一次）；无配置项、无右键菜单、无拖拽；前台全屏窗口或任务栏自动隐藏时隐藏 |
 
 ## 数据源
 
@@ -40,6 +42,8 @@
 | 接口总量 | `GetIfEntry`（iphlpapi） | 普通 |
 | 进程字节 | ETW `Microsoft-Windows-Kernel-Network`，事件 10/11（TCP 收/发）、26/27（UDP 收/发） | 管理员 |
 | 进程名 | `Process.ProcessName` | 普通 |
+| CPU 占用 | `GetSystemTimes` 两次差值（kernel+user−idle） | 普通 |
+| 内存占用 | `GlobalMemoryStatusEx().dwMemoryLoad` | 普通 |
 
 ETW 事件 payload 含 PID、字节数与源/目的地址，是本机唯一可用的 PID 级字节来源。
 连接数来源（`GetExtendedTcpTable`）随受限模式一并取消，不再采集。
@@ -60,6 +64,7 @@ ETW 事件 payload 含 PID、字节数与源/目的地址，是本机唯一可�
 ```
 EtwSampler (后台线程) ──> ProcessAggregator (3s 滑窗) ──> UI (1s 刷新)
 AdapterSampler (1s)   ──> 总量 + 60s 走势
+AdapterSampler (1s)   ──> TaskbarWindow：任务栏一行读数（网速 + 内存 + CPU）
 ```
 
 - 采样与 UI 解耦，UI 只读快照。
@@ -73,6 +78,13 @@ AdapterSampler (1s)   ──> 总量 + 60s 走势
 - 断网（无默认路由）时总量归零、清空 Top，页脚显示「断网 · 等待默认路由恢复」；
   恢复后重置滑窗，避免把断网区间的差值算进第一帧。
 - 不做接口选择：统计口径恒为默认路由接口（见定案 4），没有下拉、没有配置文件。
+- 任务栏读数用顶层窗口贴在 `TrayNotifyWnd.left − 6 DIP`，样式
+  `WS_EX_TOPMOST | WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE | WS_EX_TRANSPARENT`（点击穿透、不抢焦点）。
+  TrafficMonitor 用 `SetParent` 把窗口挂进 `Shell_TrayWnd`（`TaskBarDlg.cpp`），但本机 Win11 26200
+  上 `SetParent` 返回成功却**不被合成**：子窗口画纯红底，屏幕上仍是任务栏自己的像素；同一窗口改为
+  顶层悬浮后立刻可见。故不走子窗口路径，`SPEC` 记录这条实测结论，避免后来者按原版重做一遍。
+- 隐藏条件：前台窗口矩形覆盖任务栏所在显示器（±2 px 容差，排除 `Progman`/`WorkerW`/任务栏自身）、
+  或任务栏不在其显示器内（自动隐藏时是滑出屏幕而不是 `SW_HIDE`）。
 
 ## 验收判据
 
@@ -83,6 +95,9 @@ AdapterSampler (1s)   ──> 总量 + 60s 走势
 4. 进程字节对账用「载荷对载荷」：固定 12 MB 下载，ETW 记在该 PID 上的外网字节与 curl
    自报的 `size_download` 误差 <5%。不能用 `GetIfTable2` 做参照物——它统计 L2 线缆字节
    （含 802.11 帧头、加密开销、MAC 层重传），与 ETW 的载荷字节不是同一口径。
+5. 任务栏读数：右边缘与 `TrayNotifyWnd.left` 间隙 ≥0、≤12 px；垂直居中偏差 ≤2 px；
+   CPU 与 `\Processor(_Total)\% Processor Time` 同窗口对照误差 ≤3 个百分点，内存 ±1 个百分点；
+   前台全屏窗口覆盖任务栏显示器时读数不可见，退出全屏后 2 s 内恢复；读数不是前台窗口。
 
 ## 部署
 
@@ -91,7 +106,7 @@ native\build.bat
 copy /y native\bin\NetSpeedMonitor.exe D:\githubitem\NetSpeedMonitor\
 ```
 
-- 单个 exe（约 277 KB），`/MT` 静态链接，不依赖 .NET 或 VC 运行时。
+- 单个 exe（约 284 KB），`/MT` 静态链接，不依赖 .NET 或 VC 运行时。
 - exe 内嵌 manifest `requireAdministrator`：双击 exe 或 bat 都会弹 UAC，拒绝则不启动。
 - 同目录放 `启动 NetSpeedMonitor.bat`（CRLF、纯 ASCII、`%~dp0`），内容只有一行 `start`。
 - 发布目录不是 git 仓库，源码只留在 `默认项目\NetSpeedMonitor`。

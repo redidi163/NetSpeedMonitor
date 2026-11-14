@@ -3,6 +3,7 @@
 #include "ball.h"
 #include "etw.h"
 #include "panel.h"
+#include "taskbar.h"
 #include "tray.h"
 
 #include <algorithm>
@@ -34,6 +35,7 @@ struct App
     ProcessAggregator aggregator;
     BallWindow ball;
     PanelWindow panel;
+    TaskbarWindow taskbar;
     TrayIcon tray;
     std::deque<float> trend;
     bool offline = false;
@@ -120,6 +122,7 @@ void OnTick(App& app)
 
     const AdapterRate rate = offline ? AdapterRate{} : app.sampler.Sample();
     app.ball.SetRates(rate.down, rate.up);
+    app.taskbar.Update(rate.down, rate.up);
 
     std::vector<ProcessRow> rows;
     if (!offline && app.etw.Running())
@@ -505,6 +508,8 @@ int APIENTRY wWinMain(HINSTANCE instance, HINSTANCE, LPWSTR, int)
 
     app.panel.Create(instance, 200, 60);
     app.panel.SetNotify(app.host, WM_APP + 3);
+
+    app.taskbar.Create(instance);
 
     app.tray.Create(instance, app.host, kTrayMessage);
     UpdateTooltip(app);
