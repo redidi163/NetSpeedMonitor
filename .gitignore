@@ -10,3 +10,6 @@ __pycache__/
 *.log
 *.bak
 publish/
+.vs/
+*.user
+*.suo
