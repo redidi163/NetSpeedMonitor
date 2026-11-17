@@ -41,6 +41,18 @@ private:
     void Render();
     bool InCloseButton(int x, int y) const;
 
+    // Collapse-on-outside-click. The panel is WS_EX_NOACTIVATE, so it never
+    // becomes foreground and WM_ACTIVATE cannot report an outside click. The
+    // low-level mouse hook sees every button-down regardless of which window
+    // ends up with focus, which is the only way to catch a click that leaves
+    // the foreground window unchanged (clicking back into the app that was
+    // already foreground when the panel opened).
+    static LRESULT CALLBACK MouseHookProc(int code, WPARAM wParam, LPARAM lParam);
+    void InstallMouseHook();
+    void RemoveMouseHook();
+    bool IsOurWindowAt(POINT point) const;
+    static PanelWindow* hookOwner_;
+
     HWND hwnd_ = nullptr;
     HINSTANCE instance_ = nullptr;
     HWND host_ = nullptr;
@@ -48,9 +60,11 @@ private:
     int dpi_ = 96;
     bool visible_ = false;
 
-    // Collapse-on-outside-click. The panel is WS_EX_NOACTIVATE so it never takes
-    // focus; instead it remembers who was foreground when it opened and polls.
+    // Who was foreground when the panel opened: catches alt-tab and other
+    // focus changes that never produce a mouse click.
     HWND foregroundAtOpen_ = nullptr;
+    ULONGLONG openedAt_ = 0;
+    HHOOK mouseHook_ = nullptr;
 
     bool dragging_ = false;
     bool dragged_ = false;
