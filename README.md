@@ -10,6 +10,7 @@ Windows 任务栏网速读数 + 悬浮球 + 进程级 Top 5 面板。单个 exe�
 - **悬浮球**：76×76 圆形小窗，球上直接显示上下行速率。
 - **Top 5 面板**：单击悬浮球展开，280×348，显示默认路由网卡总量、60 秒下行走势和占用带宽最大的 5 个进程；点面板外任意位置收起。面板可拖动，拖完悬浮球跟到面板左上角。
 - **托盘**：左键单击显示/隐藏悬浮球；右键菜单有显示/隐藏悬浮球、显示/隐藏面板、退出。
+- **流量统计**：按天累计每个 exe 的载荷字节，面板底部一行显示今日合计，点「明细 ›」打开排行窗口（今日 / 近 7 天，Top 10）。数据落在 `%LOCALAPPDATA%\NetSpeedMonitor\usage\YYYY-MM.tsv`，保留 90 天。
 - 前台窗口全屏覆盖显示器时，任务栏读数与悬浮球一起隐藏，退出全屏后恢复。
 - 断网时总量归零、清空 Top 列表，恢复后重新起算。
 
@@ -28,7 +29,7 @@ Windows 任务栏网速读数 + 悬浮球 + 进程级 Top 5 面板。单个 exe�
 native\build.bat
 ```
 
-产物是 `native\bin\NetSpeedMonitor.exe`（约 284 KB，`/MT` 静态链接）。
+产物是 `native\bin\NetSpeedMonitor.exe`（约 384 KB，`/MT` 静态链接）。
 
 `build.bat` 第 5 行写死了 `vcvars64.bat` 的路径，本机是 VS 2026 Professional
 （`%ProgramFiles%\Microsoft Visual Studio\18\Professional\...`，MSVC 14.51）。装 VS 2022 的话目录名是
@@ -42,7 +43,7 @@ NetSpeedMonitor.exe --panel     启动后直接展开面板（截图、排查用
 NetSpeedMonitor.exe --probe 30  不开界面，打印网卡累计字节 30 秒
 ```
 
-`--probe` 输出 `T <秒> <累计下行字节> <累计上行字节>`，用来和 `Get-NetAdapterStatistics` 对账。另有 `--etw-probe`、`--etw-dump` 两个 ETW 诊断入口，用法见 `SPEC.md`。
+`--probe` 输出 `T <秒> <累计下行字节> <累计上行字节>`，用来和 `Get-NetAdapterStatistics` 对账。另有 `--etw-probe`、`--etw-dump`、`--usage-probe` 三个诊断入口，用法见 `SPEC.md`。
 
 单实例由 `Local\NetSpeedMonitor.Native` 互斥量保证，重复启动直接退出。
 
@@ -51,6 +52,8 @@ NetSpeedMonitor.exe --probe 30  不开界面，打印网卡累计字节 30 秒
 - 只统计默认路由接口，每 5 秒重查一次。不做多网卡合计，也没有接口下拉框。
 - 单位固定 KB/s（1 位小数），没有 Mbps / MB/s 切换。
 - 不写任何配置：窗口位置、悬浮球显隐都只在本次运行内有效，没有开机自启。
+- 流量统计只记程序运行期间，退出后的流量不计；关机或程序没启动的时段是空白，不是 0。
+  数据按天分行、保留 90 天，跨月的旧文件在启动时整月删除。进程按 exe 名合并，不显示路径。
 - 速率口径是 TCP/UDP 载荷，比网卡层的线缆字节低约 6%（少掉帧头、加密与重传开销）。
 - 走系统代理上网时，回环流量归发起方进程，代理进程本身不计入 Top 列表，避免同一份字节算两次。规则写在 `SPEC.md` 的「归属规则」。
 

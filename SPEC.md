@@ -7,7 +7,7 @@
 
 ## 非目标（第一期）
 
-- 历史数据落盘、按天统计
+- 历史流量只记进程维度：不记连接明细、不做历史曲线
 - 连接级明细（远端 IP:端口）
 - 开机自启
 - 进程图标、友好名映射
@@ -32,9 +32,10 @@
 | 13 | 受限模式 | 不做。非提权直接不启动（C# 版 04 工单已 superseded） |
 | 14 | 边界 | 5s 重查默认路由；唤醒重建会话；断网显示 0；进程退出延迟 5s 移除 |
 | 15 | 进程名 | 只显示 exe 名，无图标、无友好名 |
-| 16 | 配置 | 无。不落盘任何状态；X = 隐藏，退出走托盘 |
+| 16 | 配置 | 无配置文件。除流量统计目录外不落盘；X = 隐藏，退出走托盘 |
 | 17 | 任务栏读数 | 任务栏右侧常显一行 `↑41.0 ↓1496.0 KB/s · 内存 42% · CPU 12%`；字体 11 pt，颜色跟系统浅/深色（启动读一次）；无配置项、无右键菜单、无拖拽 |
 | 18 | 全屏 | 前台窗口覆盖所在显示器时，任务栏读数与悬浮球都隐藏，退出全屏后 1 s 内恢复；任务栏自动隐藏时读数一并隐藏 |
+| 19 | 流量统计 | 按天累计进程级载荷字节，落 `%LOCALAPPDATA%\NetSpeedMonitor\usage\YYYY-MM.tsv`；只统计程序运行期间；保留 90 天；界面只显示 Top 10 |
 
 ## 数据源
 
@@ -66,6 +67,7 @@ ETW 事件 payload 含 PID、字节数与源/目的地址，是本机唯一可�
 EtwSampler (后台线程) ──> ProcessAggregator (3s 滑窗) ──> UI (1s 刷新)
 AdapterSampler (1s)   ──> 总量 + 60s 走势
 AdapterSampler (1s)   ──> TaskbarWindow：任务栏一行读数（网速 + 内存 + CPU）
+ProcessAggregator     ──> UsageLedger (只加不减) ──> UsageStore (30 s 节流) ──> 排行窗口
 ```
 
 - 采样与 UI 解耦，UI 只读快照。
@@ -89,6 +91,18 @@ AdapterSampler (1s)   ──> TaskbarWindow：任务栏一行读数（网速 + �
   面板保持 `WS_EX_NOACTIVATE`（不抢焦点），所以不能靠 `WM_ACTIVATE` 判定失焦：面板从不
   成为前台窗口，而点回“打开面板前就是前台的那个窗口”时前台不会发生变化，只比前台快照
   永远看不到这次点击。native-10 在本机复现了这条路径，钩子方案是对它的修法。
+- 流量账本（定案 19）不能读 `EtwCounters` 的总账：那是采样会话内的每 PID 累计，会话重建
+  （启动、睡眠唤醒）后会从 0 重新开始，直接读会让当日总量倒退；`ProcessAggregator::Entry`
+  也不能用，它 5 s 过期，进程退出后其字节就从账里消失。所以账本每 tick 自己加一次增量，
+  `TakeUsageDeltas()` 取走（只读不取会让同一批字节在下一 tick 再加一遍），增量在本地代理
+  判定之后产出，与屏幕 Top 5 完全同口径。
+- 落盘：`%LOCALAPPDATA%\NetSpeedMonitor\usage\YYYY-MM.tsv`，UTF-8、Tab 分隔，一行是
+  日期 / exe 名 / 完整路径 / down / up / lastSeen；先写 `.tmp` 再 `MoveFileExW` 替换，
+  30 s 或 1 MB 触发一次，空闲不重写，退出时强制写一次；保留 90 天，整月超窗直接删文件。
+  启动时用当日已落盘行预热账本，所以「保存」可以重复执行而不会翻倍。
+- 界面：面板 footer 上方一行当日合计（下载 / 上传 / 明细 ›），点击打开排行窗口
+  （今日 / 近 7 天，Top 10 按 `down+up` 降序）；两个窗口共用 `OutsideCollapse` 的
+  收起逻辑（钩子 + 前台轮询），都是 `WS_EX_NOACTIVATE`，不抢焦点。
 - 任务栏读数用顶层窗口贴在 `TrayNotifyWnd.left − 6 DIP`，样式
   `WS_EX_TOPMOST | WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE | WS_EX_TRANSPARENT`（点击穿透、不抢焦点）。
   TrafficMonitor 用 `SetParent` 把窗口挂进 `Shell_TrayWnd`（`TaskBarDlg.cpp`），但本机 Win11 26200
@@ -114,6 +128,10 @@ AdapterSampler (1s)   ──> TaskbarWindow：任务栏一行读数（网速 + �
    两者都不是前台窗口。
 6. 面板收起：点面板外任一窗口 ≤250 ms 收起，且**前台窗口不变时同样收起**（点回打开面板前的
    前台窗口）；点面板内不收起；点悬浮球切换收起；12 次开合后进程句柄数不增长。
+7. 流量统计：固定 12 MB 下载后该 exe 的当日增量与 `curl` `size_download` 误差 <5%；重启后
+   当日累计不减；睡眠唤醒的增量不丢；跨 00:00 新增一行且旧行不变；界面 Top 10 与 TSV 聚合
+   逐行相等；超过 90 天的整月文件被删除；连续 1 小时 `TotalDown` 不出现下降；与
+   `--etw-probe` 同窗口对账误差 <5%；走系统代理时 `verge-mihomo` 不出现在排行里。
 
 ## 部署
 
@@ -122,7 +140,7 @@ native\build.bat
 copy /y native\bin\NetSpeedMonitor.exe D:\githubitem\NetSpeedMonitor\
 ```
 
-- 单个 exe（约 284 KB），`/MT` 静态链接，不依赖 .NET 或 VC 运行时。
+- 单个 exe（约 384 KB），`/MT` 静态链接，不依赖 .NET 或 VC 运行时。
 - exe 内嵌 manifest `requireAdministrator`：双击 exe 或 bat 都会弹 UAC，拒绝则不启动。
 - 同目录放 `启动 NetSpeedMonitor.bat`（CRLF、纯 ASCII、`%~dp0`），内容只有一行 `start`。
 - 发布目录不是 git 仓库，源码只留在 `默认项目\NetSpeedMonitor`。
