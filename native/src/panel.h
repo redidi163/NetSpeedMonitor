@@ -1,6 +1,7 @@
 #pragma once
 
 #include "aggregate.h"
+#include "collapse.h"
 #include "common.h"
 
 #include <vector>
@@ -32,6 +33,13 @@ public:
                  const std::vector<float>& trend, const std::vector<ProcessRow>& rows,
                  const std::wstring& footer);
 
+    // Today's cumulative bytes (native-13); `storeOk == false` marks the line so
+    // a user can tell "nothing used yet" from "not being written to disk".
+    void SetUsage(int64_t todayDown, int64_t todayUp, bool storeOk);
+
+    // Clicking the usage line reports to `host` with `message`.
+    void SetUsageNotify(HWND host, UINT message);
+
     // Screen position of the top-left corner, in pixels.
     POINT Position() const;
 
@@ -40,18 +48,12 @@ private:
     LRESULT Handle(UINT message, WPARAM wParam, LPARAM lParam);
     void Render();
     bool InCloseButton(int x, int y) const;
+    bool InUsageLine(int x, int y) const;
 
     // Collapse-on-outside-click. The panel is WS_EX_NOACTIVATE, so it never
-    // becomes foreground and WM_ACTIVATE cannot report an outside click. The
-    // low-level mouse hook sees every button-down regardless of which window
-    // ends up with focus, which is the only way to catch a click that leaves
-    // the foreground window unchanged (clicking back into the app that was
-    // already foreground when the panel opened).
-    static LRESULT CALLBACK MouseHookProc(int code, WPARAM wParam, LPARAM lParam);
-    void InstallMouseHook();
-    void RemoveMouseHook();
-    bool IsOurWindowAt(POINT point) const;
-    static PanelWindow* hookOwner_;
+    // becomes foreground and WM_ACTIVATE cannot report an outside click; the
+    // shared helper runs the low-level hook plus the foreground poll (native-10).
+    OutsideCollapse collapse_;
 
     HWND hwnd_ = nullptr;
     HINSTANCE instance_ = nullptr;
@@ -60,17 +62,17 @@ private:
     int dpi_ = 96;
     bool visible_ = false;
 
-    // Who was foreground when the panel opened: catches alt-tab and other
-    // focus changes that never produce a mouse click.
-    HWND foregroundAtOpen_ = nullptr;
-    ULONGLONG openedAt_ = 0;
-    HHOOK mouseHook_ = nullptr;
-
     bool dragging_ = false;
     bool dragged_ = false;
     bool closePressed_ = false;
     POINT dragStart_{};
     POINT dragOrigin_{};
+
+    HWND usageHost_ = nullptr;
+    UINT usageMessage_ = 0;
+    int64_t todayDown_ = 0;
+    int64_t todayUp_ = 0;
+    bool storeOk_ = true;
 
     std::wstring adapterName_;
     std::wstring footer_;

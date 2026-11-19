@@ -1,5 +1,7 @@
 #include "panel.h"
 
+#include "usage.h"
+
 #include <gdiplus.h>
 #include <shellscalingapi.h>
 #include <windowsx.h>
@@ -20,15 +22,13 @@ constexpr int kTop = 10;
 constexpr int kPadding = 14;
 constexpr int kRowHeight = 24;
 constexpr int kRowsTop = 162;
+constexpr int kUsageTop = 300;
 constexpr int kNameWidth = 164;
 constexpr int kDownWidth = 40;
 constexpr int kUpWidth = 34;
 constexpr int kDragThresholdDip = 6;
 constexpr UINT_PTR kForegroundTimerId = 1;
 constexpr UINT kForegroundPollMs = 200;
-// The panel opens mid-focus-handover (tray menu closing, or --panel while the
-// desktop settles); ignore the poll until the foreground has had time to land.
-constexpr ULONGLONG kOpenGraceMs = 500;
 // Posted by the mouse hook; handled on the UI thread so Show(false) never runs
 // inside the hook callback.
 constexpr UINT kCollapseMessage = WM_APP + 4;
@@ -182,20 +182,16 @@ void PanelWindow::Show(bool visible)
     {
         Render();
         visible_ = true;
-        // A NOACTIVATE window does not take focus, so the foreground window at
-        // this moment is the user's app, not the panel. It is the reference the
-        // timer compares against to catch alt-tab and other focus changes.
-        foregroundAtOpen_ = GetForegroundWindow();
-        openedAt_ = GetTickCount64();
         ShowWindow(hwnd_, SW_SHOWNOACTIVATE);
         SetTimer(hwnd_, kForegroundTimerId, kForegroundPollMs, nullptr);
-        InstallMouseHook();
+        // Records the reference foreground window and installs the hook.
+        collapse_.Start(hwnd_, kCollapseMessage);
     }
     else
     {
         // Tear the hook down first: it posts kCollapseMessage, and a stale post
         // after the panel closed would hit the next open.
-        RemoveMouseHook();
+        collapse_.Stop();
         KillTimer(hwnd_, kForegroundTimerId);
         visible_ = false;
         ShowWindow(hwnd_, SW_HIDE);
@@ -205,60 +201,24 @@ void PanelWindow::Show(bool visible)
     }
 }
 
-PanelWindow* PanelWindow::hookOwner_ = nullptr;
-
-bool PanelWindow::IsOurWindowAt(POINT point) const
-{
-    // The panel itself is checked by rectangle: it is a layered window with
-    // rounded corners, where WindowFromPoint skips the fully transparent pixels.
-    RECT rect{};
-    if (GetWindowRect(hwnd_, &rect) && PtInRect(&rect, point)) return true;
-
-    // Anything else of ours: the ball (a click there toggles the panel, so it
-    // must not be treated as an outside click) and the host window.
-    const HWND under = WindowFromPoint(point);
-    if (!under) return false;
-    const HWND root = GetAncestor(under, GA_ROOT);
-    DWORD pid = 0;
-    GetWindowThreadProcessId(root ? root : under, &pid);
-    return pid == GetCurrentProcessId();
-}
-
-void PanelWindow::InstallMouseHook()
-{
-    if (mouseHook_) return;
-    hookOwner_ = this;
-    mouseHook_ = SetWindowsHookExW(WH_MOUSE_LL, MouseHookProc, GetModuleHandleW(nullptr), 0);
-}
-
-void PanelWindow::RemoveMouseHook()
-{
-    if (!mouseHook_) return;
-    UnhookWindowsHookEx(mouseHook_);
-    mouseHook_ = nullptr;
-    hookOwner_ = nullptr;
-}
-
-LRESULT CALLBACK PanelWindow::MouseHookProc(int code, WPARAM wParam, LPARAM lParam)
-{
-    // WH_MOUSE_LL runs on this thread's message loop, but still keep the work
-    // here to a hit test: the hook sits in the system's input path.
-    if (code == HC_ACTION && hookOwner_ && hookOwner_->visible_ &&
-        (wParam == WM_LBUTTONDOWN || wParam == WM_RBUTTONDOWN || wParam == WM_MBUTTONDOWN))
-    {
-        const auto* info = reinterpret_cast<const MSLLHOOKSTRUCT*>(lParam);
-        if (!hookOwner_->IsOurWindowAt(info->pt))
-        {
-            PostMessageW(hookOwner_->hwnd_, kCollapseMessage, 0, 0);
-        }
-    }
-    return CallNextHookEx(nullptr, code, wParam, lParam);
-}
-
 void PanelWindow::SetNotify(HWND host, UINT message)
 {
     host_ = host;
     notifyMessage_ = message;
+}
+
+void PanelWindow::SetUsageNotify(HWND host, UINT message)
+{
+    usageHost_ = host;
+    usageMessage_ = message;
+}
+
+void PanelWindow::SetUsage(int64_t todayDown, int64_t todayUp, bool storeOk)
+{
+    todayDown_ = todayDown > 0 ? todayDown : 0;
+    todayUp_ = todayUp > 0 ? todayUp : 0;
+    storeOk_ = storeOk;
+    if (visible_) Render();
 }
 
 bool PanelWindow::Toggle()
@@ -430,6 +390,14 @@ void PanelWindow::Render()
                      StringAlignmentFar);
         }
 
+        // Today's cumulative bytes (native-13). Clicking the line opens the usage
+        // list; the source file path stays out of the panel to keep it narrow.
+        DrawText(graphics, L"今日  \u2193" + FormatBytes(todayDown_) + L"  \u2191" +
+                               FormatBytes(todayUp_),
+                 rowFont, kPrimary, RectF(kPadding, kUsageTop, innerWidth - 64, 20));
+        DrawText(graphics, storeOk_ ? L"明细 \u203A" : L"未落盘", sectionFont, kSecondary,
+                 RectF(kPanelWidthDip - kPadding - 64, kUsageTop, 64, 20), StringAlignmentFar);
+
         DrawText(graphics, footer_, footerFont, kSecondary,
                  RectF(kPadding, 326, innerWidth, 14));
     }
@@ -469,6 +437,14 @@ bool PanelWindow::InCloseButton(int x, int y) const
            y <= closeTop + closeSize;
 }
 
+bool PanelWindow::InUsageLine(int x, int y) const
+{
+    const int top = MulDiv(kUsageTop, dpi_, 96);
+    const int height = MulDiv(20, dpi_, 96);
+    const int width = MulDiv(kPanelWidthDip, dpi_, 96);
+    return x >= 0 && x <= width && y >= top && y <= top + height;
+}
+
 LRESULT PanelWindow::Handle(UINT message, WPARAM wParam, LPARAM lParam)
 {
     switch (message)
@@ -477,11 +453,9 @@ LRESULT PanelWindow::Handle(UINT message, WPARAM wParam, LPARAM lParam)
         // Alt-tab and other focus changes that never produce a mouse click. The
         // grace period swallows the focus handover that follows opening: the
         // tray menu closing, or --panel starting while the desktop settles.
-        if (wParam == kForegroundTimerId && visible_ && !dragging_ &&
-            GetTickCount64() - openedAt_ >= kOpenGraceMs)
+        if (wParam == kForegroundTimerId && visible_ && !dragging_ && collapse_.ForegroundLeft())
         {
-            const HWND foreground = GetForegroundWindow();
-            if (foreground != foregroundAtOpen_ && foreground != hwnd_) Show(false);
+            Show(false);
         }
         return 0;
 
@@ -494,6 +468,18 @@ LRESULT PanelWindow::Handle(UINT message, WPARAM wParam, LPARAM lParam)
     {
         const int x = GET_X_LPARAM(lParam);
         const int y = GET_Y_LPARAM(lParam);
+
+        if (InUsageLine(x, y))
+        {
+            // Opens the ranking window. Handled before the drag logic so a click
+            // here can never turn into a panel move.
+            if (usageHost_ && usageMessage_)
+            {
+                PostMessageW(usageHost_, usageMessage_, 0, 0);
+            }
+            return 0;
+        }
+
         closePressed_ = InCloseButton(x, y);
         if (!closePressed_)
         {
@@ -571,7 +557,7 @@ LRESULT PanelWindow::Handle(UINT message, WPARAM wParam, LPARAM lParam)
         return 0;
 
     case WM_DESTROY:
-        RemoveMouseHook();
+        collapse_.Stop();
         hwnd_ = nullptr;
         return 0;
 

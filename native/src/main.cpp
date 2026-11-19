@@ -7,6 +7,7 @@
 #include "tray.h"
 #include "usage.h"
 #include "usage_store.h"
+#include "usage_window.h"
 
 #include <algorithm>
 #include <cstdarg>
@@ -24,6 +25,8 @@
 namespace
 {
 constexpr UINT kTrayMessage = WM_APP + 1;
+// Posted by the panel's usage line; opens the ranking window (native-13).
+constexpr UINT kUsageMessage = WM_APP + 6;
 constexpr UINT_PTR kTimerId = 1;
 constexpr int kTickMs = 1000;
 constexpr int kRouteRecheckTicks = 5; // SPEC 14: re-read the default route every 5 s
@@ -41,6 +44,7 @@ struct App
     TrayIcon tray;
     UsageLedger usage;
     UsageStore store;
+    UsageWindow usageWindow;
     std::deque<float> trend;
     bool offline = false;
     int64_t lastResumeTicks = 0;
@@ -109,6 +113,58 @@ void TogglePanel(App& app)
     app.panel.Show(true);
 }
 
+// Today comes from the live ledger (it already carries today's seeded rows), the
+// week from persisted days plus that ledger - the store never reads today back
+// out of the file, so the two cannot disagree.
+void RefreshUsageWindow(App& app)
+{
+    const std::wstring today = LocalDateString();
+    app.usageWindow.SetData(app.store.Aggregate(1, today, app.usage),
+                            app.store.Aggregate(7, today, app.usage),
+                            app.store.Error().empty());
+}
+
+void ShowUsageWindow(App& app)
+{
+    if (app.usageWindow.IsVisible())
+    {
+        app.usageWindow.Show(false);
+        return;
+    }
+
+    RefreshUsageWindow(app);
+
+    // Opens to the left of the panel when it is up, otherwise beside the ball.
+    HWND reference = app.panel.IsVisible() ? app.panel.Hwnd() : app.ball.Hwnd();
+    RECT anchor{};
+    if (reference) GetWindowRect(reference, &anchor);
+
+    const int dpi = reference ? static_cast<int>(GetDpiForWindow(reference)) : 0;
+    if (dpi > 0) app.usageWindow.SetDpi(dpi);
+
+    const SIZE size = app.usageWindow.Size();
+
+    int x = anchor.left - size.cx - 8;
+    int y = anchor.top;
+    if (!app.panel.IsVisible())
+    {
+        x = anchor.right + 8;
+        y = anchor.top;
+    }
+
+    MONITORINFO info{sizeof(info)};
+    if (GetMonitorInfoW(MonitorFromWindow(reference, MONITOR_DEFAULTTONEAREST), &info))
+    {
+        x = std::min(x, static_cast<int>(info.rcWork.right) - static_cast<int>(size.cx));
+        x = std::max(x, static_cast<int>(info.rcWork.left));
+        y = std::min(y, static_cast<int>(info.rcWork.bottom) - static_cast<int>(size.cy));
+        y = std::max(y, static_cast<int>(info.rcWork.top));
+    }
+
+    app.usageWindow.MoveTo(x, y);
+    app.usageWindow.Show(true);
+}
+
 void OnTick(App& app)
 {
     // SPEC 4/14: the counters always follow the default route; re-read it every
@@ -140,6 +196,9 @@ void OnTick(App& app)
     }
 
     app.store.MaybeSave(LocalDateString(), app.usage, TicksToSeconds(NowTicks()), false);
+
+    app.panel.SetUsage(app.usage.TotalDown(), app.usage.TotalUp(), app.store.Error().empty());
+    if (app.usageWindow.IsVisible()) RefreshUsageWindow(app);
 
     app.trend.push_back(static_cast<float>(rate.down / 1024.0));
     while (static_cast<int>(app.trend.size()) > kTrendPoints) app.trend.pop_front();
@@ -218,6 +277,10 @@ LRESULT CALLBACK HostProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lParam)
     case WM_APP + 3:
         // Panel finished a drag: the ball sits on its top-left corner.
         app->ball.MoveTo(static_cast<int>(wParam), static_cast<int>(lParam));
+        return 0;
+
+    case kUsageMessage:
+        ShowUsageWindow(*app);
         return 0;
 
     case kTrayMessage:
@@ -581,6 +644,8 @@ int APIENTRY wWinMain(HINSTANCE instance, HINSTANCE, LPWSTR, int)
 
     app.panel.Create(instance, 200, 60);
     app.panel.SetNotify(app.host, WM_APP + 3);
+    app.panel.SetUsageNotify(app.host, kUsageMessage);
+    app.usageWindow.Create(instance);
 
     app.taskbar.Create(instance);
 
