@@ -6,6 +6,7 @@
 #include "taskbar.h"
 #include "tray.h"
 #include "usage.h"
+#include "usage_store.h"
 
 #include <algorithm>
 #include <cstdarg>
@@ -39,6 +40,7 @@ struct App
     TaskbarWindow taskbar;
     TrayIcon tray;
     UsageLedger usage;
+    UsageStore store;
     std::deque<float> trend;
     bool offline = false;
     int64_t lastResumeTicks = 0;
@@ -137,6 +139,8 @@ void OnTick(App& app)
         app.usage.Add(app.aggregator.TakeUsageDeltas());
     }
 
+    app.store.MaybeSave(LocalDateString(), app.usage, TicksToSeconds(NowTicks()), false);
+
     app.trend.push_back(static_cast<float>(rate.down / 1024.0));
     while (static_cast<int>(app.trend.size()) > kTrendPoints) app.trend.pop_front();
 
@@ -223,6 +227,8 @@ LRESULT CALLBACK HostProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lParam)
 
     case WM_DESTROY:
         KillTimer(hwnd, kTimerId);
+        // Force the last 30 s of usage to disk before the process disappears.
+        app->store.MaybeSave(LocalDateString(), app->usage, 0, true);
         PostQuitMessage(0);
         return 0;
 
@@ -580,6 +586,11 @@ int APIENTRY wWinMain(HINSTANCE instance, HINSTANCE, LPWSTR, int)
 
     app.tray.Create(instance, app.host, kTrayMessage);
     UpdateTooltip(app);
+
+    // Seed before the first tick: a restart continues today's totals instead of
+    // starting from zero.
+    app.store.Open(DefaultUsageDir(), LocalDateString());
+    app.store.SeedToday(LocalDateString(), app.usage);
 
     SetTimer(app.host, kTimerId, kTickMs, nullptr);
     OnTick(app);

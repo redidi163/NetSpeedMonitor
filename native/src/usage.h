@@ -20,11 +20,26 @@ struct UsageRow
     int64_t up = 0;
 };
 
+// One account with its identity, as persisted today (native-12).
+struct UsageAccount
+{
+    std::wstring key;
+    std::wstring name;
+    int64_t down = 0;
+    int64_t up = 0;
+};
+
 class UsageLedger
 {
 public:
     void Add(const std::vector<UsageDelta>& deltas);
     void Reset();
+
+    // Restores bytes already recorded earlier today. Seeding twice with the same
+    // rows would double them, so the store seeds exactly once at startup.
+    void Seed(const std::wstring& key, const std::wstring& name, int64_t down, int64_t up);
+
+    std::vector<UsageAccount> Accounts() const;
 
     // Descending by down+up.
     std::vector<UsageRow> Top(size_t count) const;

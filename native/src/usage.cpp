@@ -30,6 +30,38 @@ void UsageLedger::Reset()
     totalUp_ = 0;
 }
 
+void UsageLedger::Seed(const std::wstring& key, const std::wstring& name, int64_t down, int64_t up)
+{
+    const int64_t safeDown = down > 0 ? down : 0;
+    const int64_t safeUp = up > 0 ? up : 0;
+
+    Account& account = accounts_[key];
+    account.name = name;
+    account.down += safeDown;
+    account.up += safeUp;
+
+    totalDown_ += safeDown;
+    totalUp_ += safeUp;
+}
+
+std::vector<UsageAccount> UsageLedger::Accounts() const
+{
+    std::vector<UsageAccount> rows;
+    rows.reserve(accounts_.size());
+
+    for (const auto& [key, account] : accounts_)
+    {
+        UsageAccount row;
+        row.key = key;
+        row.name = account.name;
+        row.down = account.down;
+        row.up = account.up;
+        rows.push_back(std::move(row));
+    }
+
+    return rows;
+}
+
 std::vector<UsageRow> UsageLedger::Top(size_t count) const
 {
     std::vector<UsageRow> rows;
