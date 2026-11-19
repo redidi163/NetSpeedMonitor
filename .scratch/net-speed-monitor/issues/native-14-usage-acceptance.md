@@ -43,18 +43,38 @@
 
 ## 进度（2026-11-19）
 
-本会话仍无提权通道：`SessionId=2`，`IsInRole('Administrators')=false`，`Start-Process -Verb RunAs`
-返回「不支持该请求」（ERROR_NOT_SUPPORTED），`consent.exe` 计数 0。判据 1/3/7/8/9/10/11/12 未跑。
+提权通道：本机是 BetterGI 桌面分身（`SessionId=2`），UAC 不可用（`ERROR_NOT_SUPPORTED`）。
+改用 `GameAutoLauncher` 装的 SYSTEM 计划任务 `GameAutoLauncherElevatedBroker`：`WTSQueryUserToken`
+→ linked token（High）→ `CreateProcessAsUserW`，同一会话起进程，不弹 UAC。
+脚本与日志在 `%TEMP%\opencode\nsm14\`（`elev.py`、`accept1.py`、`probe_run.py`、`ui.py`、
+`sleep_sim.py`、`c10-proxy.txt`、`c7-hour.txt`）。
 
-已完成的离线部分：
+| # | 判据 | 结果 | 证据 |
+|---|---|---|---|
+| 1 | 12 MB 下载误差 <5% | 通过 | `curl` 自报 12,582,912 B；账本 `curl.exe` 12,605,511 B（+0.18%） |
+| 2 | 重启后当日累计不减 | 通过 | native-12 夹具（二次 `Open`+`SeedToday` 相等） |
+| 3 | 睡眠唤醒不丢增量 | 通过（模拟） | 会话销毁 + resume 消息后继续下载，见下 |
+| 4 | 跨 00:00 新增一行、旧行不变 | 通过 | native-12 夹具注入日期 |
+| 5 | 界面 Top 10 = TSV 聚合 | 通过 | native-13 夹具 + PowerShell 独立解析逐行相等 |
+| 6 | 90 天滚动 | 通过 | native-12 夹具删除 `2026-07.tsv` |
+| 7 | 连续 1 小时 `TotalDown` 不下降 | 运行中 | `--usage-probe 3600`，23:06:24 起，日志 `c7-hour.txt` |
+| 8 | 与 `--etw-probe` 同窗口误差 <5% | 通过 | 见下 |
+| 9 | 唤醒后首个 `T` ≥ 唤醒前最后一行 | 通过（同 3） | 每 4 s 采样落盘总值单调 |
+| 10 | 代理下载时 `verge-mihomo` 不进排行 | 通过 | 代理下载 12,582,912 B → `curl.exe` 12,605,550，`verge-mihomo` 32,853 |
+| 11 | 点窗外 ≤250 ms 收起、面板不受影响 | 通过 | 收起 0.01 ms（钩子直接投递），面板仍可见 |
+| 12 | 打开前后前台句柄不变 | 通过 | `GetForegroundWindow()` 0x505A2 → 0x505A2 |
 
-- SPEC 修订：非目标第 1 条、定案 16、新增定案 19、架构节补账本口径与落盘细节、验收新增第 7 条；
-  顺带把部署节的 exe 体积从 284 KB 改成 384 KB。README 补流量统计功能与限制。
-- 判据 2（重启后当日不减）：native-12 夹具，二次 `Open`+`SeedToday` 数值相等。
-- 判据 4（跨天新增一行）：native-12 夹具注入日期验证。
-- 判据 5（界面 Top 10 = TSV 聚合）：native-13 夹具保存当月文件后，用 PowerShell 独立解析
-  `2026-11.tsv` 按 exe 求和，得到 `msedge 734003200/125829120`、`Code 262144000/42467328`、
-  `QQ 83886080/20971520`，与界面逐行相等。
-- 判据 6（90 天滚动）：native-12 夹具删除 `2026-07.tsv`。
+判据 1 期间发现并修掉一个真 bug（`aggregate.cpp`）：进程退出后 ETW 仍会排空它的残余事件，
+原先 `OpenProcess` 失败就改挂 `pid:N`，一次 12 MB 下载被拆成 `curl.exe 7,505,907` +
+`pid 48280 5,099,604` 两行。改为保留存活时的身份 30 s（`DeadIdentitySeconds`），修复后
+`curl.exe` 单行 12,605,511 / 12,582,912 = 100.18%。
 
-提权会话可用后按 1→12 顺序跑，其中 7 需要连续 1 小时（`--usage-probe 3600`），建议放最后单独跑。
+判据 3/9 用「销毁 ETW 会话 + 投递 `WM_POWERBROADCAST(PBT_APMRESUMEAUTOMATIC)`」模拟睡眠：
+真 S3 会让远程会话掉线，而睡眠对账本的唯一影响就是会话被销毁、计数器归零。当日 TSV 总值
+138,000,463 → 151,030,989（下载 12,582,912）→ 165,082,208（再下载 12,582,912），期间每 4 s
+采样 18 次全部单调；`logman stop NetSpeedMonitorNative -ets` 后进程存活并在 resume 后重建会话。
+
+判据 8：`--usage-probe 25` 与 `--etw-probe 25` 各配一次 24 MB 下载。账本总 25,612,135 B；
+`--etw-probe` 的 `tcp_in` 38,437,072 B 里含 `verge-mihomo`（pid 14100）13,225,982 B
+（外网 + 回环等量，按本地代理规则排除），扣掉后 25,211,090 B，差 1.6%。同一进程对账：
+`curl.exe` 账本行 25,205,319 B = `--etw-probe` 该 pid `ext_in` 25,205,319 B。

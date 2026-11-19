@@ -96,6 +96,9 @@ ProcessAggregator     ──> UsageLedger (只加不减) ──> UsageStore (30 
   也不能用，它 5 s 过期，进程退出后其字节就从账里消失。所以账本每 tick 自己加一次增量，
   `TakeUsageDeltas()` 取走（只读不取会让同一批字节在下一 tick 再加一遍），增量在本地代理
   判定之后产出，与屏幕 Top 5 完全同口径。
+- 进程身份按 PID 缓存（5 s），进程退出后保留存活时的 exe 名 30 s：ETW 的实时事件会在进程
+  退出后才排空（实测 12 MB 的 `curl` 下载被拆成 `curl.exe 7.5 MB` + `pid 48280 5.1 MB`），
+  不能因为 `OpenProcess` 失败就改挂 `pid:N`。PID 被复用时靠 startTicks 比对丢弃首帧。
 - 落盘：`%LOCALAPPDATA%\NetSpeedMonitor\usage\YYYY-MM.tsv`，UTF-8、Tab 分隔，一行是
   日期 / exe 名 / 完整路径 / down / up / lastSeen；先写 `.tmp` 再 `MoveFileExW` 替换，
   30 s 或 1 MB 触发一次，空闲不重写，退出时强制写一次；保留 90 天，整月超窗直接删文件。

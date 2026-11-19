@@ -43,6 +43,11 @@ public:
     static constexpr double MinVisibleBytesPerSecond = 1024;
     static constexpr double MaxGapSeconds = 5;
 
+    // A dead process keeps the identity it had while alive: ETW events for it
+    // can still be drained after it exits, and naming them pid:N would split a
+    // single process across two accounts (seen with curl: 7.5 MB + 5.1 MB).
+    static constexpr double DeadIdentitySeconds = 30;
+
     // A process that moves more than this in both the loopback and the external
     // segment in one window is a local proxy; its counters are dropped so its
     // downstream clients are not counted twice.

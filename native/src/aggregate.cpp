@@ -79,6 +79,7 @@ const ProcessAggregator::Identity& ProcessAggregator::ResolveIdentity(uint32_t p
     }
 
     Identity identity;
+    bool resolved = false;
     HANDLE process = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, FALSE, pid);
     if (!process)
     {
@@ -94,6 +95,7 @@ const ProcessAggregator::Identity& ProcessAggregator::ResolveIdentity(uint32_t p
             const std::wstring full(path, size);
             identity.key = ToLower(full);
             identity.name = BaseName(full);
+            resolved = true;
         }
         else
         {
@@ -111,6 +113,12 @@ const ProcessAggregator::Identity& ProcessAggregator::ResolveIdentity(uint32_t p
         }
 
         CloseHandle(process);
+    }
+
+    if (!resolved && cached != identities_.end() && !cached->second.identity.key.starts_with(L"pid:"))
+    {
+        cached->second.expiresAt = nowSeconds + DeadIdentitySeconds;
+        return cached->second.identity;
     }
 
     CachedIdentity entry;
