@@ -29,7 +29,7 @@ Windows 任务栏网速读数 + 悬浮球 + 进程级 Top 5 面板。单个 exe�
 native\build.bat
 ```
 
-产物是 `native\bin\NetSpeedMonitor.exe`（约 384 KB，`/MT` 静态链接）。
+产物是 `native\bin\NetSpeedMonitor.exe`（约 387 KB，`/MT` 静态链接）。
 
 `build.bat` 第 5 行写死了 `vcvars64.bat` 的路径，本机是 VS 2026 Professional
 （`%ProgramFiles%\Microsoft Visual Studio\18\Professional\...`，MSVC 14.51）。装 VS 2022 的话目录名是

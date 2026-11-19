@@ -143,7 +143,7 @@ native\build.bat
 copy /y native\bin\NetSpeedMonitor.exe D:\githubitem\NetSpeedMonitor\
 ```
 
-- 单个 exe（约 384 KB），`/MT` 静态链接，不依赖 .NET 或 VC 运行时。
+- 单个 exe（约 387 KB），`/MT` 静态链接，不依赖 .NET 或 VC 运行时。
 - exe 内嵌 manifest `requireAdministrator`：双击 exe 或 bat 都会弹 UAC，拒绝则不启动。
 - 同目录放 `启动 NetSpeedMonitor.bat`（CRLF、纯 ASCII、`%~dp0`），内容只有一行 `start`。
 - 发布目录不是 git 仓库，源码只留在 `默认项目\NetSpeedMonitor`。
