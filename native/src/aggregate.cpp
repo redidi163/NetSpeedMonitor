@@ -125,6 +125,7 @@ void ProcessAggregator::Reset()
     entries_.clear();
     pidStart_.clear();
     previous_.clear();
+    usageDeltas_.clear();
     lastTick_ = -1;
 }
 
@@ -144,6 +145,7 @@ std::vector<ProcessRow> ProcessAggregator::Update(const std::vector<PidSnapshot>
                                                   double& externalBytesPerSecond)
 {
     externalBytesPerSecond = 0;
+    usageDeltas_.clear();
 
     if (lastTick_ < 0)
     {
@@ -188,6 +190,14 @@ std::vector<ProcessRow> ProcessAggregator::Update(const std::vector<PidSnapshot>
 
         if (IsLocalProxy(delta)) continue;
         if (delta.in == 0 && delta.out == 0) continue;
+
+        // Same bytes that feed the row, so the ledger and the panel agree.
+        UsageDelta usage;
+        usage.key = identity.key;
+        usage.name = identity.name;
+        usage.down = delta.in;
+        usage.up = delta.out;
+        usageDeltas_.push_back(std::move(usage));
 
         ProcessRow& sum = tickSums[identity.key];
         sum.name = identity.name;

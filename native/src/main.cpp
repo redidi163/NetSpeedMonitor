@@ -5,6 +5,7 @@
 #include "panel.h"
 #include "taskbar.h"
 #include "tray.h"
+#include "usage.h"
 
 #include <algorithm>
 #include <cstdarg>
@@ -37,6 +38,7 @@ struct App
     PanelWindow panel;
     TaskbarWindow taskbar;
     TrayIcon tray;
+    UsageLedger usage;
     std::deque<float> trend;
     bool offline = false;
     int64_t lastResumeTicks = 0;
@@ -130,6 +132,9 @@ void OnTick(App& app)
     {
         double external = 0;
         rows = app.aggregator.Update(app.etw.Snapshot(), TicksToSeconds(NowTicks()), external);
+        // The ledger outlives every window and session rebuild: it only ever
+        // adds, so wake-ups and process exits cannot make a total go backwards.
+        app.usage.Add(app.aggregator.TakeUsageDeltas());
     }
 
     app.trend.push_back(static_cast<float>(rate.down / 1024.0));
@@ -416,6 +421,57 @@ int RunEtwDump(int seconds, const std::wstring& path)
     sampler.Stop();
     return 0;
 }
+
+// Cumulative per-exe totals over a fixed window, written to `path` because an
+// elevated process cannot redirect stdout. Feeds native-11's monotonic and
+// conservation checks, and reconciles against --etw-probe's external total.
+int RunUsageProbe(int seconds, const std::wstring& path)
+{
+    FILE* log = nullptr;
+    if (!path.empty()) _wfopen_s(&log, path.c_str(), L"w");
+
+    EtwSampler sampler;
+    if (!sampler.Start(kEtwSession))
+    {
+        Emit(log, L"# etw failed: %ls\n", sampler.Error().c_str());
+        if (log) fclose(log);
+        return 1;
+    }
+
+    ProcessAggregator aggregator;
+    UsageLedger ledger;
+    Emit(log, L"# usage seconds=%d mode=%ls\n", seconds, sampler.EnableMode().c_str());
+
+    for (int i = 1; i <= seconds; ++i)
+    {
+        Sleep(1000);
+
+        double external = 0;
+        aggregator.Update(sampler.Snapshot(), TicksToSeconds(NowTicks()), external);
+        ledger.Add(aggregator.TakeUsageDeltas());
+
+        Emit(log, L"T %d %lld %lld %llu\n", i, static_cast<long long>(ledger.TotalDown()),
+             static_cast<long long>(ledger.TotalUp()),
+             static_cast<unsigned long long>(ledger.Count()));
+    }
+
+    sampler.Stop();
+
+    for (const UsageRow& row : ledger.Top(32))
+    {
+        Emit(log, L"U %ls %lld %lld\n", row.name.c_str(), static_cast<long long>(row.down),
+             static_cast<long long>(row.up));
+    }
+
+    Emit(log, L"# total %lld %lld accounts=%llu events=%lld lost=%lld\n",
+         static_cast<long long>(ledger.TotalDown()), static_cast<long long>(ledger.TotalUp()),
+         static_cast<unsigned long long>(ledger.Count()),
+         static_cast<long long>(sampler.EventCount()),
+         static_cast<long long>(sampler.EventsLost()));
+
+    if (log) fclose(log);
+    return 0;
+}
 } // namespace
 
 int APIENTRY wWinMain(HINSTANCE instance, HINSTANCE, LPWSTR, int)
@@ -453,6 +509,16 @@ int APIENTRY wWinMain(HINSTANCE instance, HINSTANCE, LPWSTR, int)
         const int seconds = argc >= 3 ? _wtoi(argv[2]) : 10;
         const std::wstring path = argc >= 4 ? argv[3] : L"etw-dump.txt";
         const int code = RunEtwDump(seconds, path);
+        LocalFree(argv);
+        Gdiplus::GdiplusShutdown(gdiToken);
+        return code;
+    }
+
+    if (argc >= 2 && wcscmp(argv[1], L"--usage-probe") == 0)
+    {
+        const int seconds = argc >= 3 ? _wtoi(argv[2]) : 30;
+        const std::wstring path = argc >= 4 ? argv[3] : L"usage-probe.txt";
+        const int code = RunUsageProbe(seconds, path);
         LocalFree(argv);
         Gdiplus::GdiplusShutdown(gdiToken);
         return code;

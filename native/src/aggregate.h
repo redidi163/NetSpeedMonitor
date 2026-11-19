@@ -6,6 +6,7 @@
 #include <deque>
 #include <string>
 #include <unordered_map>
+#include <utility>
 #include <vector>
 
 struct ProcessRow
@@ -16,6 +17,17 @@ struct ProcessRow
     std::wstring downText;
     std::wstring upText;
     double barWidth = 0;
+};
+
+// One tick's contribution for a single exe, measured after the local-proxy
+// filter so a long-term ledger built from these deltas uses exactly the same
+// attribution as the on-screen rows.
+struct UsageDelta
+{
+    std::wstring key;  // lowercased full image path
+    std::wstring name; // base name
+    int64_t down = 0;
+    int64_t up = 0;
 };
 
 // Port of Services/ProcessAggregator.cs. Three rules live here:
@@ -41,6 +53,11 @@ public:
     // Returns the Top 5 and writes the external-segment total rate.
     std::vector<ProcessRow> Update(const std::vector<PidSnapshot>& snapshot, double nowSeconds,
                                    double& externalBytesPerSecond);
+
+    // Deltas produced by the most recent Update(), for the cumulative ledger.
+    // Taken rather than read: a caller that forgets to consume would otherwise
+    // add the same bytes twice on the next tick.
+    std::vector<UsageDelta> TakeUsageDeltas() { return std::move(usageDeltas_); }
 
     void Reset();
 
@@ -76,6 +93,7 @@ private:
     std::unordered_map<std::wstring, Entry> entries_;
     std::unordered_map<uint32_t, int64_t> pidStart_;
     std::unordered_map<uint32_t, EtwCounters> previous_;
+    std::vector<UsageDelta> usageDeltas_;
     double lastTick_ = -1;
 };
 
