@@ -4,7 +4,7 @@
 
 **Blocked by:** native-15、native-16
 
-**Status:** active
+**Status:** done
 
 ## SPEC 改动
 
@@ -35,10 +35,15 @@
 - 复制 `native\bin\NetSpeedMonitor.exe` 到 `D:\githubitem\NetSpeedMonitor\`。
 - `git tag v0.3.0`，推送到 `origin/main`（需 `HTTPS_PROXY=http://127.0.0.1:7897`，`gh` 在 `D:\githubitem\gh\bin`，非仓库目录加 `-R redidi163/NetSpeedMonitor`）。
 
-## 进度（2026-11-20）
-
 | # | 判据 | 结果 | 证据 |
 |---|---|---|---|
 | 8 | 无设备 → 胶囊隐藏 | 未测（本机有接收器，拔插需人工）| — |
 | 9 | 86 绿底不闪 / 18 闪烁 / 18c 红底常亮 | 通过 | `pill_check.py`：force86 fill=(43,112,42) 不闪；force18 4 次切换 bright/dark；force18c fill=(32,40,178) 常亮 |
 | 10 | 百分比变化不改窗口宽度 | 通过 | force86 与 force18 pill width 均 51 px，rect 相同 |
+
+## 交付（2026-11-20）
+
+- 提交 `f50c7ac`：`feat: 任务栏鼠标电量胶囊（native-15/16/17）`，9 文件 +826/−5
+- tag `v0.3.0` 已推送 `origin/main`，`git status` 干净
+- exe 已复制 `D:\githubitem\NetSpeedMonitor\NetSpeedMonitor.exe`（395,776 字节）
+- native-15 探针本机 hits=0（BetterGI 分身会话 COL01 open err=5，无法采集物理鼠标；读取层代码完整，需真机/主桌面复测）
