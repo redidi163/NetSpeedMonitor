@@ -15,6 +15,12 @@
 // This unit's ff01 collection accepts only id 0xF0 (id 0x00 is refused with
 // ERROR_INVALID_PARAMETER), so every interface is probed with both ids and the
 // first reply carrying a 1..100 percentage wins. See native-15.
+//
+// WRITE ENDPOINT (native-16): the receiver listens on the interrupt OUT pipe.
+// UMD/HidSharp's OutputExchange uses stream.Write() -> WriteFile (interrupt OUT).
+// HidD_SetOutputReport uses control SET_REPORT, which the class driver ACKs
+// (err=0) but the device firmware ignores -> no reply on interrupt IN. Both
+// endpoints are tried now; logs tag them INT-OUT / CTRL.
 struct BatteryReading
 {
     int percent = 0;
@@ -52,9 +58,11 @@ private:
     std::vector<Interface> Enumerate();
     static std::optional<BatteryReading> Parse(const std::vector<unsigned char>& raw,
                                                unsigned char reportId, const wchar_t* protocol);
+    // writeVia: true = WriteFile on interrupt OUT (UMD/HidSharp path, preferred);
+    //           false = HidD_SetOutputReport on control SET_REPORT (fallback).
     static bool Exchange(HANDLE device, unsigned char reportId,
                          const std::vector<unsigned char>& payload, int readLen, int timeoutMs,
-                         std::vector<unsigned char>& reply, DWORD& error);
+                         bool writeViaInterrupt, std::vector<unsigned char>& reply, DWORD& error);
 
     // The interface that answered last time goes first; a stale path simply fails
     // to open and the full sweep runs again.

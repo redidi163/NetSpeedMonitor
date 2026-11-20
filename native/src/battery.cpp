@@ -19,19 +19,90 @@ constexpr unsigned short kVendors[] = {0xA8A5, 0xA8A4};
 // microseconds (ERROR_INVALID_PARAMETER), so the sweep costs almost nothing.
 constexpr unsigned char kReportIds[] = {0xF0, 0x00, 0xAB, 0x0A};
 
-constexpr int kSettleMs = 30;   // device needs ~25-30 ms before the reply lands
-constexpr int kReplyMs = 250;   // per-frame read window
+constexpr int kSettleMs = 25;   // device needs ~25 ms before the reply lands (UMD)
+constexpr int kReplyMs = 400;   // per-frame read window (UMD OutputExchange timeout)
+constexpr int kMaxAttempts = 8; // UMD OutputExchange retries
+
+// Drain：读空输入缓冲的残留帧，超时后直接返回，忽略结果。
+static void Drain(HANDLE device, int readLen, int timeoutMs)
+{
+    std::vector<unsigned char> buf(static_cast<size_t>(readLen), 0);
+    OVERLAPPED ov{};
+    ov.hEvent = CreateEventW(nullptr, TRUE, FALSE, nullptr);
+    if (!ov.hEvent) return;
+    DWORD got = 0;
+    if (!ReadFile(device, buf.data(), static_cast<DWORD>(readLen), &got, &ov))
+    {
+        if (GetLastError() == ERROR_IO_PENDING)
+        {
+            WaitForSingleObject(ov.hEvent, static_cast<DWORD>(timeoutMs));
+            CancelIo(device);
+        }
+    }
+    WaitForSingleObject(ov.hEvent, 50);
+    CloseHandle(ov.hEvent);
+}
 
 constexpr int kPollOkMs = 60000;       // a healthy receiver is asked once a minute
 constexpr int kPollFailMs = 60000;
 constexpr int kPollBackoffMs = 120000; // three misses in a row: the mouse is asleep
 constexpr double kSnapshotMaxAgeSeconds = 180.0;
 
+// How the total Read() budget is split between the two write endpoints. INTERRUPT
+// gets the larger share because it is the one the firmware actually answers.
+constexpr double kInterruptBudget = 0.65;
+
 bool IsKnownVendor(unsigned short vendorId)
 {
     for (unsigned short known : kVendors)
         if (vendorId == known) return true;
     return false;
+}
+
+// Send a numbered output report.
+//
+// viaInterrupt=true  -> WriteFile on the interrupt OUT pipe. This is what
+//   UMD/HidSharp's OutputExchange does (stream.Write) and what this receiver's
+//   firmware listens to. The handle is opened FILE_FLAG_OVERLAPPED, so writes
+//   are completed through an OVERLAPPED event.
+// viaInterrupt=false -> HidD_SetOutputReport on control SET_REPORT. The HID class
+//   driver ACKs this (err=0) but the device ignores it -> kept only as a fallback.
+//
+// wire[0] is the report id; wire.size() == OutputReportByteLength (incl. id).
+static bool WriteReport(HANDLE device, const std::vector<unsigned char>& wire,
+                        bool viaInterrupt, DWORD& error)
+{
+    if (viaInterrupt)
+    {
+        OVERLAPPED ov{};
+        ov.hEvent = CreateEventW(nullptr, TRUE, FALSE, nullptr);
+        if (!ov.hEvent) { error = GetLastError(); return false; }
+
+        DWORD written = 0;
+        BOOL ok = WriteFile(device, wire.data(), static_cast<DWORD>(wire.size()), &written, &ov);
+        if (!ok && GetLastError() == ERROR_IO_PENDING)
+        {
+            if (WaitForSingleObject(ov.hEvent, 1000) == WAIT_OBJECT_0 &&
+                GetOverlappedResult(device, &ov, &written, FALSE))
+                ok = TRUE;
+        }
+        CloseHandle(ov.hEvent);
+
+        if (!ok) { error = GetLastError(); return false; }
+        error = 0;
+        return true;
+    }
+
+    // HidD_SetOutputReport takes PVOID (non-const) though it never writes the
+    // buffer; wire is const here because both callers share one wire builder.
+    if (!HidD_SetOutputReport(device, const_cast<unsigned char*>(wire.data()),
+                              static_cast<ULONG>(wire.size())))
+    {
+        error = GetLastError();
+        return false;
+    }
+    error = 0;
+    return true;
 }
 } // namespace
 
@@ -110,7 +181,8 @@ std::vector<BatteryReader::Interface> BatteryReader::Enumerate()
 
 bool BatteryReader::Exchange(HANDLE device, unsigned char reportId,
                              const std::vector<unsigned char>& payload, int readLen,
-                             int timeoutMs, std::vector<unsigned char>& reply, DWORD& error)
+                             int timeoutMs, bool writeViaInterrupt,
+                             std::vector<unsigned char>& reply, DWORD& error)
 {
     reply.clear();
 
@@ -119,14 +191,10 @@ bool BatteryReader::Exchange(HANDLE device, unsigned char reportId,
     wire.push_back(reportId);
     wire.insert(wire.end(), payload.begin(), payload.end());
 
-    // HidD_SetOutputReport wants exactly OutputReportByteLength bytes, report id
-    // included; a wrong id fails here without touching the device.
-    if (!HidD_SetOutputReport(device, wire.data(), static_cast<ULONG>(wire.size())))
-    {
-        error = GetLastError();
+    // Write on the endpoint the firmware actually listens on. A wrong report id
+    // still fails here without reaching the device, so the sweep stays cheap.
+    if (!WriteReport(device, wire, writeViaInterrupt, error))
         return false;
-    }
-    error = 0;
 
     Sleep(kSettleMs);
 
@@ -197,7 +265,11 @@ std::optional<BatteryReading> BatteryReader::Parse(const std::vector<unsigned ch
 
 std::optional<BatteryReading> BatteryReader::Read(int timeoutMs, FILE* log)
 {
-    const ULONGLONG deadline = GetTickCount64() + static_cast<ULONGLONG>(timeoutMs);
+    const ULONGLONG start = GetTickCount64();
+    const ULONGLONG deadline = start + static_cast<ULONGLONG>(timeoutMs);
+    // interrupt OUT (firmware path) gets the first slice; control is a fallback.
+    const ULONGLONG split = start +
+        static_cast<ULONGLONG>(static_cast<double>(timeoutMs) * kInterruptBudget);
 
     std::vector<Interface> interfaces = Enumerate();
     if (interfaces.empty())
@@ -218,80 +290,117 @@ std::optional<BatteryReading> BatteryReader::Read(int timeoutMs, FILE* log)
                          });
     }
 
-    for (const Interface& entry : interfaces)
+    // Two write endpoints: interrupt OUT first (what the firmware answers), then
+    // control SET_REPORT. Each pass has its own deadline so a silent interrupt
+    // pipe cannot starve the control fallback - and the log shows which one worked.
+    for (int endpoint = 0; endpoint < 2; ++endpoint)
     {
-        if (entry.outLen < 2) continue;
-        if (GetTickCount64() >= deadline) break;
+        const bool viaInterrupt = endpoint == 0;
+        const ULONGLONG passDeadline = viaInterrupt ? split : deadline;
+        if (GetTickCount64() >= passDeadline) continue;
 
-        HANDLE device = CreateFileW(entry.path.c_str(), GENERIC_READ | GENERIC_WRITE,
-                                    FILE_SHARE_READ | FILE_SHARE_WRITE, nullptr, OPEN_EXISTING,
-                                    FILE_FLAG_OVERLAPPED, nullptr);
-        if (device == INVALID_HANDLE_VALUE)
+        if (log)
+            fwprintf(log, L"# === write via %s ===\n", viaInterrupt ? L"INT-OUT" : L"CTRL");
+
+        for (const Interface& entry : interfaces)
         {
-            if (log) fwprintf(log, L"# out=%d open failed err=%lu\n", entry.outLen, GetLastError());
-            continue;
-        }
+            if (entry.outLen < 2) continue;
+            if (GetTickCount64() >= passDeadline) break;
 
-        const int readLen = std::max(entry.inLen, entry.outLen);
-        std::optional<BatteryReading> hit;
-
-        for (unsigned char reportId : kReportIds)
-        {
-            if (GetTickCount64() >= deadline) break;
-
-            std::vector<unsigned char> payload(static_cast<size_t>(entry.outLen) - 1, 0);
-            const bool ajazz = reportId == 0xF0;
-
-            if (ajazz)
+            HANDLE device = CreateFileW(entry.path.c_str(), GENERIC_READ | GENERIC_WRITE,
+                                        FILE_SHARE_READ | FILE_SHARE_WRITE, nullptr, OPEN_EXISTING,
+                                        FILE_FLAG_OVERLAPPED, nullptr);
+            if (device == INVALID_HANDLE_VALUE)
             {
-                payload[0] = 0x30;
-                if (payload.size() > 1) payload[1] = 0x01;
-            }
-            else
-            {
-                static const unsigned char kHead[] = {0x55, 0x30, 0xA5, 0x0B, 0x2E,
-                                                      0x01, 0x01, 0x00, 0x00, 0x00};
-                const size_t copy = std::min(payload.size(), sizeof(kHead));
-                std::memcpy(payload.data(), kHead, copy);
-            }
-
-            std::vector<unsigned char> reply;
-            DWORD error = 0;
-            const ULONGLONG now = GetTickCount64();
-            const int window = now >= deadline ? 0 : static_cast<int>(deadline - now);
-            if (window <= 0) break;
-
-            if (!Exchange(device, reportId, payload, readLen, window, reply, error))
-            {
-                if (log)
-                    fwprintf(log, L"# out=%d rid=%02X no reply err=%lu\n", entry.outLen, reportId,
-                             error);
+                if (log) fwprintf(log, L"# out=%d open failed err=%lu\n", entry.outLen, GetLastError());
                 continue;
             }
 
-            if (log)
+            const int readLen = std::max(entry.inLen, entry.outLen);
+            std::optional<BatteryReading> hit;
+
+            for (unsigned char reportId : kReportIds)
             {
-                std::wstring hex;
-                for (unsigned char byte : reply)
+                if (GetTickCount64() >= passDeadline) break;
+
+                // 本机 A8A5:2255 最大 out=64：Ksnake 需要 wire=65B 写不进去，
+                // 只有 Ajazz（wire=64B，out>=64）可用。其它 rid 保留但优先级低。
+                if (reportId == 0x00 && entry.outLen < 65) continue;
+                if (reportId == 0xF0 && entry.outLen < 64) continue;
+
+                std::vector<unsigned char> payload(static_cast<size_t>(entry.outLen) - 1, 0);
+                const bool ajazz = reportId == 0xF0;
+
+                if (ajazz)
                 {
-                    wchar_t cell[8];
-                    swprintf_s(cell, L"%02X ", byte);
-                    hex += cell;
+                    payload[0] = 0x30;
+                    if (payload.size() > 1) payload[1] = 0x01;
                 }
-                fwprintf(log, L"# out=%d rid=%02X rx %ls\n", entry.outLen, reportId, hex.c_str());
+                else
+                {
+                    static const unsigned char kHead[] = {0x55, 0x30, 0xA5, 0x0B, 0x2E,
+                                                          0x01, 0x01, 0x00, 0x00, 0x00};
+                    const size_t copy = std::min(payload.size(), sizeof(kHead));
+                    std::memcpy(payload.data(), kHead, copy);
+                }
+
+                // UMD OutputExchange 时序：Drain → write → sleep(25ms) → ReadFile(400ms)，
+                // 最多 8 次尝试。每次失败后间隔 30ms 再重试。
+                for (int attempt = 0; attempt < kMaxAttempts; ++attempt)
+                {
+                    if (GetTickCount64() >= passDeadline) break;
+
+                    // 先把输入缓冲的残留帧读空
+                    Drain(device, readLen, 20);
+
+                    std::vector<unsigned char> reply;
+                    DWORD error = 0;
+                    const ULONGLONG now = GetTickCount64();
+                    const int window = now >= passDeadline ? 0
+                                       : static_cast<int>(std::min(passDeadline, deadline) - now);
+                    if (window <= 0) break;
+
+                    if (!Exchange(device, reportId, payload, readLen, window,
+                                  viaInterrupt, reply, error))
+                    {
+                        if (log)
+                            fwprintf(log, L"# out=%d rid=%02X %s attempt=%d no reply err=%lu\n",
+                                     entry.outLen, reportId, viaInterrupt ? L"INT-OUT" : L"CTRL",
+                                     attempt, error);
+                        Sleep(30);
+                        continue;
+                    }
+
+                    if (log)
+                    {
+                        std::wstring hex;
+                        for (unsigned char byte : reply)
+                        {
+                            wchar_t cell[8];
+                            swprintf_s(cell, L"%02X ", byte);
+                            hex += cell;
+                        }
+                        fwprintf(log, L"# out=%d rid=%02X %s attempt=%d rx %ls\n",
+                                 entry.outLen, reportId, viaInterrupt ? L"INT-OUT" : L"CTRL",
+                                 attempt, hex.c_str());
+                    }
+
+                    hit = Parse(reply, reportId, ajazz ? L"ajazz" : L"ksnake");
+                    if (hit)
+                    {
+                        hit->outLen = entry.outLen;
+                        cachedPath_ = entry.path;
+                        break;
+                    }
+                    Sleep(30);
+                }
+
+                if (hit) break;
             }
 
-            hit = Parse(reply, reportId, ajazz ? L"ajazz" : L"ksnake");
-            if (hit)
-            {
-                hit->outLen = entry.outLen;
-                cachedPath_ = entry.path;
-                break;
-            }
+            CloseHandle(device);
+            if (hit) return hit;
         }
-
-        CloseHandle(device);
-        if (hit) return hit;
     }
 
     error_ = L"no reply";
