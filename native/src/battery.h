@@ -9,18 +9,23 @@
 // Battery of the 2.4G receiver at A8A5:2255 ("Viper V3 Pro" / K-snake family).
 //
 // The receiver never volunteers the level: it answers a query written to one of
-// its vendor collections. Two wire layouts are known (handoff notes, 2026-11-19):
-//   K-snake: report id 0x00, 64-byte payload starting 55 30 A5 0B 2E 01 01 00 00 00
-//   Ajazz  : report id 0xF0, 63-byte payload starting 30 01
-// This unit's ff01 collection accepts only id 0xF0 (id 0x00 is refused with
-// ERROR_INVALID_PARAMETER), so every interface is probed with both ids and the
-// first reply carrying a 1..100 percentage wins. See native-15.
+// its vendor collections. It is a YJX-CHIP (product string / firmware id), so the
+// REAL battery command is the hardware-verified YJX/Ksnake frame (native-18):
+//   request: report id 0x00, wire [00] 55 30 A5 0B 2E 01 01 01 <zeros>  (outLen bytes)
+//   reply:   AA 30 A5 0B ... ; percent@8 (1..100), charging@9
+// The Ajazz frame on report id 0xF0 (request 30 01) is a DIFFERENT device family
+// (NJ07/NJ08) sharing the same VID; on this unit it returns a bogus 0x64 "100%".
+// It is kept only as a last-resort fallback. See native-18 / protocol-yjx-a8a5.md.
 //
 // WRITE ENDPOINT (native-16): the receiver listens on the interrupt OUT pipe.
 // UMD/HidSharp's OutputExchange uses stream.Write() -> WriteFile (interrupt OUT).
 // HidD_SetOutputReport uses control SET_REPORT, which the class driver ACKs
 // (err=0) but the device firmware ignores -> no reply on interrupt IN. Both
 // endpoints are tried now; logs tag them INT-OUT / CTRL.
+//
+// LENGTH (native-18): Windows OutputReportByteLength already includes the report
+// id, so wire = [id]+(outLen-1). The old "Ksnake needs 65B, can't fit out=64"
+// assumption was wrong (HidSharp counts the payload, Windows counts the id).
 struct BatteryReading
 {
     int percent = 0;
