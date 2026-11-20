@@ -36,6 +36,7 @@
 | 17 | 任务栏读数 | 任务栏右侧常显一行 `↑41.0 ↓1496.0 KB/s · 内存 42% · CPU 12%`；字体 11 pt，颜色跟系统浅/深色（启动读一次）；无配置项、无右键菜单、无拖拽 |
 | 18 | 全屏 | 前台窗口覆盖所在显示器时，任务栏读数与悬浮球都隐藏，退出全屏后 1 s 内恢复；任务栏自动隐藏时读数一并隐藏 |
 | 19 | 流量统计 | 按天累计进程级载荷字节，落 `%LOCALAPPDATA%\NetSpeedMonitor\usage\YYYY-MM.tsv`；只统计程序运行期间；保留 90 天；界面只显示 Top 10 |
+| 20 | 鼠标电量胶囊 | 任务栏读数右侧画胶囊，宽 `max(38, 文本宽+12)` DIP、高 16 DIP、与文字间距 8 DIP，锚在 `TrayNotifyWnd.left − 6 DIP`。无设备→整段隐藏；有设备未读到或样本龄 >180 s→`--` 灰底不闪；正常→百分比；充电→`+` 后缀。底色随电量由绿过渡到红，≤20% 固定 `RGB(178,40,32)`，白字；放电且 ≤20% 时 500 ms 闪烁（进 ≤20% / 退 23%），充电时不闪。 |
 
 ## 数据源
 
@@ -46,6 +47,7 @@
 | 进程名 | `Process.ProcessName` | 普通 |
 | CPU 占用 | `GetSystemTimes` 两次差值（kernel+user−idle） | 普通 |
 | 内存占用 | `GlobalMemoryStatusEx().dwMemoryLoad` | 普通 |
+| 鼠标电量 | 2.4G 接收器 vendor collection（A8A5:2255），`hid.dll`+`setupapi.dll` HID 原生 API，主动写 query 读回包 | 管理员（提权进程打开 HID 设备） |
 
 ETW 事件 payload 含 PID、字节数与源/目的地址，是本机唯一可用的 PID 级字节来源。
 连接数来源（`GetExtendedTcpTable`）随受限模式一并取消，不再采集。
@@ -68,6 +70,7 @@ EtwSampler (后台线程) ──> ProcessAggregator (3s 滑窗) ──> UI (1s �
 AdapterSampler (1s)   ──> 总量 + 60s 走势
 AdapterSampler (1s)   ──> TaskbarWindow：任务栏一行读数（网速 + 内存 + CPU）
 ProcessAggregator     ──> UsageLedger (只加不减) ──> UsageStore (30 s 节流) ──> 排行窗口
+BatteryReader (worker 线程) ──> BatterySnapshot ──> TaskbarWindow：任务栏读数右侧电量胶囊
 ```
 
 - 采样与 UI 解耦，UI 只读快照。
@@ -115,6 +118,10 @@ ProcessAggregator     ──> UsageLedger (只加不减) ──> UsageStore (30 
   显示器（±2 px 容差，排除 `Progman`/`WorkerW`/任务栏自身与本进程窗口）。任务栏读数另需任务栏
   不在自动隐藏滑出状态（此时是滑出屏幕而不是 `SW_HIDE`）。悬浮球只记用户意图，全屏仅临时压住
   显示，托盘菜单文案仍按用户选择显示。
+- 电量读取不阻塞 UI：`BatteryReader.Read()` 最多阻塞 2.5 s，跑在 `BatteryMonitor` worker 线程；
+  UI 线程每 tick 只读 `BatterySnapshot` 快照，样本龄超过 180 s 视为失效（`--` 灰底）。读取层按
+  `0xF0`/`0x00`/`0xAB`/`0x0A` 四个 report id 逐个接口尝试，第一条带 1..100 百分比的回包胜出；
+  无接收器时 `DevicePresent()` 为 false，胶囊整段隐藏。
 
 ## 验收判据
 
@@ -135,6 +142,9 @@ ProcessAggregator     ──> UsageLedger (只加不减) ──> UsageStore (30 
    当日累计不减；睡眠唤醒的增量不丢；跨 00:00 新增一行且旧行不变；界面 Top 10 与 TSV 聚合
    逐行相等；超过 90 天的整月文件被删除；连续 1 小时 `TotalDown` 不出现下降；与
    `--etw-probe` 同窗口对账误差 <5%；走系统代理时 `verge-mihomo` 不出现在排行里。
+8. 无设备 → 胶囊整段隐藏：拔掉 2.4G 接收器，任务栏读数右侧不出现电量胶囊；重插后恢复。
+9. `--battery-force=86` 胶囊绿底常亮；`--battery-force=18` 500 ms 闪烁（进 ≤20% / 退 23%）；`--battery-force=18c` 红底常亮不闪：提权脚本启动，`pill_check.py` 抓 `NSM.Taskbar` 窗口像素，胶囊中心点填充色与 bright/dark 切换次数。
+10. 百分比变化不改窗口宽度：`--battery-force=50` 与 `=86` 连续切换，`NSM.Taskbar` 窗口 rect 保持不变（不抖动、不重dock）。
 
 ## 部署
 

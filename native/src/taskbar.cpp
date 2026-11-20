@@ -14,6 +14,54 @@ constexpr int kGapDip = 6;
 constexpr int kFallbackRightDip = 220; // no TrayNotifyWnd: keep clear of the clock
 constexpr int kFontPointSize = 11;
 
+// Battery pill (native-16): fixed width so the readout never re-docks on a
+// percent change, and a 500 ms blink is the only animation in the app.
+constexpr int kPillGapDip = 8;
+constexpr int kPillHeightDip = 18;
+constexpr int kPillMinWidthDip = 40;
+constexpr int kPillPaddingDip = 12;
+constexpr int kPillFontPointSize = 9;
+constexpr UINT_PTR kBlinkTimerId = 1;
+constexpr UINT kBlinkMs = 500;
+
+COLORREF Blend(COLORREF from, COLORREF to, double t)
+{
+    auto mix = [t](int left, int right)
+    { return static_cast<int>(left + (right - left) * t + 0.5); };
+    return RGB(mix(GetRValue(from), GetRValue(to)), mix(GetGValue(from), GetGValue(to)),
+               mix(GetBValue(from), GetBValue(to)));
+}
+
+// Anchors keep white text above 4.5:1 from green down to red; the segments
+// between them are interpolated so the colour tracks the level continuously.
+COLORREF LevelColor(int percent)
+{
+    struct Stop
+    {
+        int at;
+        COLORREF color;
+    };
+    static const Stop kStops[] = {{20, RGB(178, 40, 32)},
+                                  {30, RGB(150, 72, 16)},
+                                  {50, RGB(122, 100, 16)},
+                                  {70, RGB(63, 120, 32)},
+                                  {100, RGB(24, 105, 52)}};
+    constexpr int kCount = static_cast<int>(sizeof(kStops) / sizeof(kStops[0]));
+
+    if (percent <= kStops[0].at) return kStops[0].color;
+    for (int i = 1; i < kCount; ++i)
+    {
+        if (percent <= kStops[i].at)
+        {
+            const Stop& low = kStops[i - 1];
+            const Stop& high = kStops[i];
+            const double t = static_cast<double>(percent - low.at) / (high.at - low.at);
+            return Blend(low.color, high.color, t);
+        }
+    }
+    return kStops[kCount - 1].color;
+}
+
 uint64_t ToU64(const FILETIME& time)
 {
     ULARGE_INTEGER value;
@@ -107,12 +155,35 @@ bool TaskbarWindow::Dock()
 
 bool TaskbarWindow::EnsureFont(int dpi)
 {
+    if (!pillFont_)
+    {
+        pillFont_ = CreateFontW(-MulDiv(kPillFontPointSize, dpi, 72), 0, 0, 0, FW_SEMIBOLD, FALSE,
+                                FALSE, FALSE, DEFAULT_CHARSET, OUT_DEFAULT_PRECIS,
+                                CLIP_DEFAULT_PRECIS, CLEARTYPE_QUALITY,
+                                DEFAULT_PITCH | FF_DONTCARE, L"Segoe UI");
+    }
+
     if (font_) return true;
     const int height = -MulDiv(kFontPointSize, dpi, 72);
     font_ = CreateFontW(height, 0, 0, 0, FW_NORMAL, FALSE, FALSE, FALSE, DEFAULT_CHARSET,
                         OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS, CLEARTYPE_QUALITY,
                         DEFAULT_PITCH | FF_DONTCARE, L"Segoe UI");
-    return font_ != nullptr;
+
+    if (!font_ || !pillFont_) return font_ != nullptr;
+
+    // The pill is sized for the widest label once, so a percent change never
+    // resizes (and re-docks) the window.
+    HDC dc = GetDC(hwnd_);
+    HGDIOBJ old = SelectObject(dc, pillFont_);
+    SIZE extent{};
+    GetTextExtentPoint32W(dc, L"100%+", 5, &extent);
+    SelectObject(dc, old);
+    ReleaseDC(hwnd_, dc);
+
+    pillHeight_ = MulDiv(kPillHeightDip, dpi, 96);
+    pillWidth_ = std::max(MulDiv(kPillMinWidthDip, dpi, 96),
+                          static_cast<int>(extent.cx) + MulDiv(kPillPaddingDip, dpi, 96));
+    return true;
 }
 
 void TaskbarWindow::ReleaseFont()
@@ -121,6 +192,11 @@ void TaskbarWindow::ReleaseFont()
     {
         DeleteObject(font_);
         font_ = nullptr;
+    }
+    if (pillFont_)
+    {
+        DeleteObject(pillFont_);
+        pillFont_ = nullptr;
     }
 }
 
@@ -136,6 +212,8 @@ void TaskbarWindow::Measure(const std::wstring& text)
     ReleaseDC(hwnd_, dc);
 
     width_ = extent.cx + padding_ * 2;
+    if (BatteryVisible() && pillWidth_ > 0)
+        width_ += MulDiv(kPillGapDip, dpi_, 96) + pillWidth_;
     height_ = MulDiv(kHeightDip, dpi_, 96);
 
     RECT taskbar{};
@@ -203,6 +281,61 @@ void TaskbarWindow::Update(double downBytesPerSecond, double upBytesPerSecond)
     text_ = buffer;
     Measure(text_);
     InvalidateRect(hwnd_, nullptr, FALSE);
+}
+
+bool TaskbarWindow::BatteryLow() const
+{
+    return battery_.present && battery_.valid && !battery_.charging && low_;
+}
+
+void TaskbarWindow::SetBattery(const BatterySnapshot& state)
+{
+    const bool wasVisible = BatteryVisible();
+    const bool sameValues = state.present == battery_.present && state.valid == battery_.valid &&
+                            state.percent == battery_.percent && state.charging == battery_.charging;
+
+    battery_ = state;
+
+    // Enter the blink at 20 %, leave it at 23 %: a reading that wobbles on the
+    // threshold must not make the pill strobe for no reason.
+    const bool low = state.present && state.valid && !state.charging &&
+                     state.percent <= (low_ ? 23 : 20);
+    const bool lowChanged = low != low_;
+    low_ = low;
+
+    UpdateBlinkTimer();
+
+    if (!hwnd_) return;
+    if (wasVisible != BatteryVisible() && !text_.empty()) Measure(text_);
+    if (!sameValues || lowChanged) InvalidateRect(hwnd_, nullptr, FALSE);
+}
+
+void TaskbarWindow::UpdateBlinkTimer()
+{
+    if (!hwnd_) return;
+
+    if (low_)
+    {
+        if (!blinkTimer_) blinkTimer_ = SetTimer(hwnd_, kBlinkTimerId, kBlinkMs, nullptr) != 0;
+        return;
+    }
+
+    if (blinkTimer_)
+    {
+        KillTimer(hwnd_, kBlinkTimerId);
+        blinkTimer_ = false;
+    }
+    blinkOn_ = true;
+}
+
+RECT TaskbarWindow::PillRect(const RECT& client) const
+{
+    RECT pill{};
+    pill.right = client.right - padding_;
+    pill.left = pill.right - pillWidth_;
+    pill.top = client.top + (client.bottom - client.top - pillHeight_) / 2;
+    pill.bottom = pill.top + pillHeight_;
+    return pill;
 }
 
 double TaskbarWindow::SampleCpu()
@@ -284,8 +417,45 @@ LRESULT TaskbarWindow::Handle(HWND hwnd, UINT message, WPARAM wParam, LPARAM lPa
 
         RECT textRect = rect;
         textRect.left += padding_;
+        if (BatteryVisible())
+            textRect.right -= pillWidth_ + MulDiv(kPillGapDip, dpi_, 96);
         DrawTextW(memory, text_.c_str(), -1, &textRect,
                   DT_SINGLELINE | DT_VCENTER | DT_LEFT | DT_NOPREFIX);
+
+        if (BatteryVisible() && pillWidth_ > 0 && pillHeight_ > 0 && pillFont_)
+        {
+            const RECT pill = PillRect(rect);
+            const COLORREF level = battery_.valid ? LevelColor(battery_.percent) : RGB(90, 90, 90);
+            const bool dimmed = low_ && !blinkOn_;
+            const COLORREF fill = dimmed ? background : level;
+            const COLORREF label = dimmed ? level : RGB(255, 255, 255);
+
+            HBRUSH pillBrush = CreateSolidBrush(fill);
+            HPEN pillPen = CreatePen(PS_SOLID, 1, level);
+            HGDIOBJ oldBrush = SelectObject(memory, pillBrush);
+            HGDIOBJ oldPen = SelectObject(memory, pillPen);
+            HGDIOBJ oldPillFont = SelectObject(memory, pillFont_);
+
+            const int radius = MulDiv(4, dpi_, 96);
+            RoundRect(memory, pill.left, pill.top, pill.right, pill.bottom, radius, radius);
+
+            wchar_t text[16];
+            if (battery_.valid)
+                swprintf_s(text, L"%d%%%ls", battery_.percent, battery_.charging ? L"+" : L"");
+            else
+                wcscpy_s(text, L"--");
+
+            SetTextColor(memory, label);
+            RECT labelRect = pill;
+            DrawTextW(memory, text, -1, &labelRect,
+                      DT_SINGLELINE | DT_VCENTER | DT_CENTER | DT_NOPREFIX);
+
+            SelectObject(memory, oldPillFont);
+            SelectObject(memory, oldPen);
+            SelectObject(memory, oldBrush);
+            DeleteObject(pillBrush);
+            DeleteObject(pillPen);
+        }
 
         SelectObject(memory, oldFont);
         BitBlt(dc, 0, 0, rect.right, rect.bottom, memory, 0, 0, SRCCOPY);
@@ -300,7 +470,21 @@ LRESULT TaskbarWindow::Handle(HWND hwnd, UINT message, WPARAM wParam, LPARAM lPa
     case WM_ERASEBKGND:
         return 1;
 
+    case WM_TIMER:
+        if (wParam == kBlinkTimerId)
+        {
+            blinkOn_ = !blinkOn_;
+            InvalidateRect(hwnd, nullptr, FALSE);
+            return 0;
+        }
+        return DefWindowProcW(hwnd, message, wParam, lParam);
+
     case WM_DESTROY:
+        if (blinkTimer_)
+        {
+            KillTimer(hwnd, kBlinkTimerId);
+            blinkTimer_ = false;
+        }
         if (hwnd_ == hwnd) hwnd_ = nullptr;
         return 0;
 

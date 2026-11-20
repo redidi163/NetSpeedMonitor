@@ -1,6 +1,7 @@
 #include "adapter.h"
 #include "aggregate.h"
 #include "ball.h"
+#include "battery.h"
 #include "etw.h"
 #include "panel.h"
 #include "taskbar.h"
@@ -45,10 +46,13 @@ struct App
     UsageLedger usage;
     UsageStore store;
     UsageWindow usageWindow;
+    BatteryMonitor battery;
     std::deque<float> trend;
     bool offline = false;
     int64_t lastResumeTicks = 0;
     int tick = 0;
+    int forcedPercent = -1; // --battery-force=NN[c], acceptance switch
+    bool forcedCharging = false;
     HWND host = nullptr;
 };
 
@@ -183,6 +187,20 @@ void OnTick(App& app)
     const AdapterRate rate = offline ? AdapterRate{} : app.sampler.Sample();
     app.ball.SetRates(rate.down, rate.up);
     app.ball.UpdateFullscreen(FullscreenOnMonitor(app.ball.Hwnd()));
+
+    BatterySnapshot battery;
+    if (app.forcedPercent >= 0)
+    {
+        battery.present = true;
+        battery.valid = true;
+        battery.percent = app.forcedPercent;
+        battery.charging = app.forcedCharging;
+    }
+    else
+    {
+        battery = app.battery.Snapshot();
+    }
+    app.taskbar.SetBattery(battery);
     app.taskbar.Update(rate.down, rate.up);
 
     std::vector<ProcessRow> rows;
@@ -541,6 +559,41 @@ int RunUsageProbe(int seconds, const std::wstring& path)
     if (log) fclose(log);
     return 0;
 }
+
+// Receiver battery, one line per sample: the wire trace goes to `path` because an
+// elevated process cannot redirect stdout. Exit code 0 only when at least one
+// sample carried a 1..100 percentage, so the acceptance script can gate on it.
+int RunBatteryProbe(int samples, const std::wstring& path)
+{
+    FILE* log = nullptr;
+    if (!path.empty()) _wfopen_s(&log, path.c_str(), L"w");
+
+    BatteryReader reader;
+    const bool present = reader.DevicePresent();
+    Emit(log, L"# battery present=%d\n", present ? 1 : 0);
+    reader.Describe(log);
+
+    int hits = 0;
+    for (int i = 0; i < samples; ++i)
+    {
+        const std::optional<BatteryReading> reading = reader.Read(2500, log);
+        if (reading)
+        {
+            ++hits;
+            Emit(log, L"T %d pct=%d chg=%d proto=%ls out=%d\n", i, reading->percent,
+                 reading->charging ? 1 : 0, reading->protocol.c_str(), reading->outLen);
+        }
+        else
+        {
+            Emit(log, L"T %d pct=-- err=%ls\n", i, reader.LastError().c_str());
+        }
+        Sleep(2000);
+    }
+
+    Emit(log, L"# done hits=%d samples=%d\n", hits, samples);
+    if (log) fclose(log);
+    return hits > 0 ? 0 : 1;
+}
 } // namespace
 
 int APIENTRY wWinMain(HINSTANCE instance, HINSTANCE, LPWSTR, int)
@@ -593,7 +646,28 @@ int APIENTRY wWinMain(HINSTANCE instance, HINSTANCE, LPWSTR, int)
         return code;
     }
 
+    if (argc >= 2 && wcscmp(argv[1], L"--battery-probe") == 0)
+    {
+        const int samples = argc >= 3 ? _wtoi(argv[2]) : 10;
+        const std::wstring path = argc >= 4 ? argv[3] : L"";
+        const int code = RunBatteryProbe(samples, path);
+        LocalFree(argv);
+        Gdiplus::GdiplusShutdown(gdiToken);
+        return code;
+    }
+
     LocalFree(argv);
+
+    // Acceptance switch (native-16): drive the pill without a live reading so
+    // colour and blink can be checked with screenshots. Not documented in README.
+    int forcedPercent = -1;
+    bool forcedCharging = false;
+    if (const wchar_t* force = wcsstr(GetCommandLineW(), L"--battery-force="))
+    {
+        forcedPercent = _wtoi(force + 16);
+        for (const wchar_t* scan = force + 16; *scan && *scan != L' ' && *scan != L'"'; ++scan)
+            if (*scan == L'c') forcedCharging = true;
+    }
 
     // SPEC 3: elevated only. The manifest already forces a UAC prompt, so this
     // guard only fires when the token is stripped some other way (e.g. a
@@ -649,6 +723,10 @@ int APIENTRY wWinMain(HINSTANCE instance, HINSTANCE, LPWSTR, int)
 
     app.taskbar.Create(instance);
 
+    app.forcedPercent = forcedPercent;
+    app.forcedCharging = forcedCharging;
+    app.battery.Start();
+
     app.tray.Create(instance, app.host, kTrayMessage);
     UpdateTooltip(app);
 
@@ -672,6 +750,7 @@ int APIENTRY wWinMain(HINSTANCE instance, HINSTANCE, LPWSTR, int)
     }
 
     app.etw.Stop();
+    app.battery.Stop();
     app.tray.Remove();
     g_app = nullptr;
     CloseHandle(mutex);

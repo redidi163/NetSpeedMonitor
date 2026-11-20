@@ -21,10 +21,10 @@ if not exist bin mkdir bin
 cl /nologo /O2 /std:c++20 /MT /W4 /permissive- /utf-8 /EHsc /DUNICODE /D_UNICODE ^
   src\main.cpp src\adapter.cpp src\common.cpp src\ball.cpp src\tray.cpp ^
   src\etw.cpp src\aggregate.cpp src\panel.cpp src\taskbar.cpp src\usage.cpp ^
-  src\usage_store.cpp src\collapse.cpp src\usage_window.cpp ^
+  src\usage_store.cpp src\collapse.cpp src\usage_window.cpp src\battery.cpp ^
   /Fo:bin\ /Fe:bin\NetSpeedMonitor.exe ^
   /link /SUBSYSTEM:WINDOWS /MANIFEST:EMBED /MANIFESTUAC:"level='requireAdministrator' uiAccess='false'" ^
-  user32.lib gdi32.lib gdiplus.lib iphlpapi.lib shell32.lib advapi32.lib
+  user32.lib gdi32.lib gdiplus.lib iphlpapi.lib shell32.lib advapi32.lib hid.lib setupapi.lib
 
 if errorlevel 1 exit /b 1
 echo built bin\NetSpeedMonitor.exe
