@@ -2,13 +2,30 @@
 
 #include <cstdio>
 
-std::wstring FormatKBps(double bytesPerSecond)
+std::wstring FormatRate(double bytesPerSecond)
 {
     if (bytesPerSecond < 0) bytesPerSecond = 0;
 
+    const double kbps = bytesPerSecond / 1024.0;
+    if (kbps < 1024.0)
+    {
+        // Fixed 3 integer digits, 1 decimal: "041.0" KB/s
+        wchar_t buffer[32];
+        swprintf_s(buffer, L"%03.1f", kbps);
+        return buffer;
+    }
+
+    // >= 1 MB/s: switch to MB/s, 2 decimals: "1.46" MB/s
+    const double mbps = kbps / 1024.0;
     wchar_t buffer[32];
-    swprintf_s(buffer, L"%.1f", bytesPerSecond / 1024.0);
+    swprintf_s(buffer, L"%.2f", mbps);
     return buffer;
+}
+
+std::wstring FormatRateUnit(double bytesPerSecond)
+{
+    const double kbps = bytesPerSecond / 1024.0;
+    return (kbps < 1024.0) ? L"KB/s" : L"MB/s";
 }
 
 bool FullscreenOnMonitor(HWND reference)

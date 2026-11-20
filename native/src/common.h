@@ -33,8 +33,11 @@ inline double TicksToSeconds(int64_t delta)
     return static_cast<double>(delta) / static_cast<double>(freq.QuadPart);
 }
 
-// "41.0" — every readout speaks KB/s, one decimal (SPEC 8).
-std::wstring FormatKBps(double bytesPerSecond);
+// Network rate readout: fixed 3-integer digits, unit auto-selected KB/s or MB/s
+// (threshold 1024 KB/s = 1 MB/s). Returns the number part only, e.g. "041.0" or
+// "1.46"; pair with FormatRateUnit() for the unit suffix.
+std::wstring FormatRate(double bytesPerSecond);
+std::wstring FormatRateUnit(double bytesPerSecond);
 
 // True when the foreground window covers the monitor `reference` sits on: a
 // full-screen video, game or presentation. Shell windows (desktop, taskbar) and

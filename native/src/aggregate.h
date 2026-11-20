@@ -101,5 +101,3 @@ private:
     std::vector<UsageDelta> usageDeltas_;
     double lastTick_ = -1;
 };
-
-std::wstring FormatRate(double bytesPerSecond);

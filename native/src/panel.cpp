@@ -327,20 +327,22 @@ void PanelWindow::Render()
 
         // Down total: the big number.
         DrawArrow(graphics, bigArrow, kDown, kPadding, 32, L"\u2193", 18);
-        const std::wstring downText = FormatKBps(down_);
+        const std::wstring downText = FormatRate(down_);
+        const std::wstring downUnit = FormatRateUnit(down_);
         DrawText(graphics, downText, bigFont, kPrimary, RectF(kPadding + 20, 32, 140, 34),
                  StringAlignmentNear, StringAlignmentCenter);
         const REAL downWidth = Measure(graphics, downText, bigFont);
-        DrawText(graphics, L"KB/s", unitFont, kSecondary,
+        DrawText(graphics, downUnit.c_str(), unitFont, kSecondary,
                  RectF(kPadding + 22 + downWidth, 44, 40, 18));
 
         // Up total: one step smaller, same left edge.
         DrawArrow(graphics, smallArrow, kUp, kPadding, 70, L"\u2191", 16);
-        const std::wstring upText = FormatKBps(up_);
+        const std::wstring upText = FormatRate(up_);
+        const std::wstring upUnit = FormatRateUnit(up_);
         DrawText(graphics, upText, upFont, kPrimary, RectF(kPadding + 18, 70, 120, 26),
                  StringAlignmentNear, StringAlignmentCenter);
         const REAL upWidth = Measure(graphics, upText, upFont);
-        DrawText(graphics, L"KB/s", unitFont, kSecondary, RectF(kPadding + 20 + upWidth, 76, 40, 18));
+        DrawText(graphics, upUnit.c_str(), unitFont, kSecondary, RectF(kPadding + 20 + upWidth, 76, 40, 18));
 
         // 60 s sparkline, newest on the right.
         {

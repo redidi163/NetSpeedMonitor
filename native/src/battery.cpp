@@ -45,10 +45,10 @@ static void Drain(HANDLE device, int readLen, int timeoutMs)
     CloseHandle(ov.hEvent);
 }
 
-constexpr int kPollOkMs = 60000;       // a healthy receiver is asked once a minute
-constexpr int kPollFailMs = 60000;
-constexpr int kPollBackoffMs = 120000; // three misses in a row: the mouse is asleep
-constexpr double kSnapshotMaxAgeSeconds = 180.0;
+constexpr int kPollOkMs = 21600000;    // healthy receiver: once every 6 hours
+constexpr int kPollFailMs = 21600000;  // miss: retry in 6 hours
+constexpr int kPollBackoffMs = 43200000; // three misses: back off to 12 hours (mouse asleep)
+constexpr double kSnapshotMaxAgeSeconds = 25200.0; // 7 hours: keep snapshot valid across a 6 h poll
 
 // How the total Read() budget is split between the two write endpoints. INTERRUPT
 // gets the larger share because it is the one the firmware actually answers.

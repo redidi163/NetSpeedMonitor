@@ -272,8 +272,9 @@ void TaskbarWindow::Update(double downBytesPerSecond, double upBytesPerSecond)
     GlobalMemoryStatusEx(&memory);
 
     wchar_t buffer[128];
-    swprintf_s(buffer, L"\u2191%ls \u2193%ls KB/s \u00B7 \u5185\u5B58 %lu%% \u00B7 CPU %.0f%%",
-               FormatKBps(upBytesPerSecond).c_str(), FormatKBps(downBytesPerSecond).c_str(),
+    swprintf_s(buffer, L"\u2191%ls%ls \u2193%ls%ls \u00B7 \u5185\u5B58 %lu%% \u00B7 CPU %.0f%%",
+               FormatRate(upBytesPerSecond).c_str(), FormatRateUnit(upBytesPerSecond).c_str(),
+               FormatRate(downBytesPerSecond).c_str(), FormatRateUnit(downBytesPerSecond).c_str(),
                static_cast<unsigned long>(memory.dwMemoryLoad), cpu);
 
     if (text_ == buffer) return;

@@ -178,16 +178,16 @@ void BallWindow::Render()
         Font upArrowFont(&symbolFamily, 12.0f * scale, FontStyleRegular, UnitPixel);
         Font downArrowFont(&symbolFamily, 13.0f * scale, FontStyleRegular, UnitPixel);
 
-        DrawRate(graphics, upArrowFont, upFont, L"\u2191", FormatKBps(up_), kUp,
+        DrawRate(graphics, upArrowFont, upFont, L"\u2191", FormatRate(up_), kUp,
                  size * 0.27f, size);
-        DrawRate(graphics, downArrowFont, downFont, L"\u2193", FormatKBps(down_), kDown,
+        DrawRate(graphics, downArrowFont, downFont, L"\u2193", FormatRate(down_), kDown,
                  size * 0.73f, size);
 
         StringFormat unitFormat;
         unitFormat.SetAlignment(StringAlignmentCenter);
         unitFormat.SetLineAlignment(StringAlignmentCenter);
         SolidBrush unitBrush(kSecondary);
-        graphics.DrawString(L"KB/s", -1, &unitFont,
+        graphics.DrawString(FormatRateUnit(down_).c_str(), -1, &unitFont,
                             PointF(size / 2.0f, size * 0.5f), &unitFormat, &unitBrush);
     }
 

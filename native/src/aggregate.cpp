@@ -1,4 +1,5 @@
 #include "aggregate.h"
+#include "common.h"
 
 #include <algorithm>
 #include <cwctype>
@@ -296,18 +297,4 @@ std::vector<ProcessRow> ProcessAggregator::BuildRows() const
     }
 
     return result;
-}
-
-std::wstring FormatRate(double bytesPerSecond)
-{
-    wchar_t buffer[32];
-
-    if (bytesPerSecond >= 1024 * 1024)
-        swprintf_s(buffer, L"%.1fM", bytesPerSecond / 1024 / 1024);
-    else if (bytesPerSecond >= 1024)
-        swprintf_s(buffer, L"%.0fK", bytesPerSecond / 1024);
-    else
-        swprintf_s(buffer, L"0");
-
-    return buffer;
 }
