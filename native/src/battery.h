@@ -8,24 +8,35 @@
 
 // Battery of the 2.4G receiver at A8A5:2255 ("Viper V3 Pro" / K-snake family).
 //
-// The receiver never volunteers the level: it answers a query written to one of
-// its vendor collections. It is a YJX-CHIP (product string / firmware id), so the
-// REAL battery command is the hardware-verified YJX/Ksnake frame (native-18):
-//   request: report id 0x00, wire [00] 55 30 A5 0B 2E 01 01 01 <zeros>  (outLen bytes)
-//   reply:   AA 30 A5 0B ... ; percent@8 (1..100), charging@9
-// The Ajazz frame on report id 0xF0 (request 30 01) is a DIFFERENT device family
-// (NJ07/NJ08) sharing the same VID; on this unit it returns a bogus 0x64 "100%".
-// It is kept only as a last-resort fallback. See native-18 / protocol-yjx-a8a5.md.
+// PROTOCOL (on-device verified 2026-11-20, not just from UMD docs):
+// The receiver has three vendor collections. Only usage_page 0xFF01 (out=64,
+// report id 0xF0) answers a battery query on interrupt OUT. The others (0xFFAB
+// rid=0xAB, 0xFF03 rid=0x0A) never reply, and report id 0x00 is not declared by
+// ANY interface -- writes to it are rejected by the HID stack (err=87), which is
+// exactly why the old "Ksnake on 0x00" code produced no reply on this unit.
 //
-// WRITE ENDPOINT (native-16): the receiver listens on the interrupt OUT pipe.
-// UMD/HidSharp's OutputExchange uses stream.Write() -> WriteFile (interrupt OUT).
+//   request on FF01:  wire [F0] 55 30 A5 0B 2E 01 01 01 <zeros>  (64 bytes)
+//   reply:            [F0] 55 30 <PCT> 0B 2E 01 01 01 <zeros>
+//                     percent = body[2] (the byte we sent as 0xA5 is overwritten
+//                     by the device with the live level, 1..100).
+// Verified: sending payload[2] = A5/00/FF/30/7B always returns a stable 0x3C
+// (60%) while every other byte is echoed -> body[2] is written by the firmware,
+// not an echo. 60% also matches the mouse's own 4-bar indicator showing 3 bars
+// (3/4 ~ 50-75%).
+//
+// IMPORTANT: the Ajazz frame (30 01) on the same 0xF0 interface returns a
+// CONSTANT 0x64 ("100%") regardless of the real level. That is a bogus value,
+// NOT a reading -- Parse() now rejects it instead of reporting 100%.
+//
+// A second reply layout from other firmware revisions is still accepted:
+//   reply AA 30 A5 0B ... ; percent@8 (1..100), charging@9.
+//
+// WRITE ENDPOINT: the receiver answers on the interrupt OUT pipe (WriteFile).
 // HidD_SetOutputReport uses control SET_REPORT, which the class driver ACKs
-// (err=0) but the device firmware ignores -> no reply on interrupt IN. Both
-// endpoints are tried now; logs tag them INT-OUT / CTRL.
+// (err=0) but this firmware ignores; kept only as a fallback, logs tag the path.
 //
-// LENGTH (native-18): Windows OutputReportByteLength already includes the report
-// id, so wire = [id]+(outLen-1). The old "Ksnake needs 65B, can't fit out=64"
-// assumption was wrong (HidSharp counts the payload, Windows counts the id).
+// LENGTH: Windows OutputReportByteLength already includes the report id, so
+// wire = [id]+(outLen-1); the FF01 collection (out=64) takes wire = [F0]+63 = 64B.
 struct BatteryReading
 {
     int percent = 0;
@@ -61,8 +72,8 @@ private:
     };
 
     std::vector<Interface> Enumerate();
-    static std::optional<BatteryReading> Parse(const std::vector<unsigned char>& raw,
-                                               unsigned char reportId, const wchar_t* protocol);
+    // Parses by reply magic, not by report id: rejects the constant-100 Ajazz echo.
+    static std::optional<BatteryReading> Parse(const std::vector<unsigned char>& raw);
     // writeVia: true = WriteFile on interrupt OUT (UMD/HidSharp path, preferred);
     //           false = HidD_SetOutputReport on control SET_REPORT (fallback).
     static bool Exchange(HANDLE device, unsigned char reportId,

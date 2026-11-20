@@ -15,11 +15,11 @@ namespace
 constexpr unsigned short kProductId = 0x2255;
 constexpr unsigned short kVendors[] = {0xA8A5, 0xA8A4};
 
-// Report ids to try, most likely first. This receiver is a YJX-CHIP (per its
-// product string / firmware id), whose REAL battery command is the Ksnake/YJX
-// frame on report id 0x00 (hardware-verified, see battery.h). Ajazz on 0xF0 is
-// kept only as a fallback: on these IDs it returns a bogus 0x64 "100%".
-constexpr unsigned char kReportIds[] = {0x00, 0xF0, 0xAB, 0x0A};
+// Only report ids the receiver actually declares. On-device probing showed the
+// three vendor collections declare 0xF0 (FF01), 0xAB (FFAB) and 0x0A (FF03);
+// 0x00 is declared by NONE, so writes there are rejected by the HID stack and
+// never reach the firmware. FF01/0xF0 is the one that answers battery queries.
+constexpr unsigned char kReportIds[] = {0xF0, 0xAB, 0x0A};
 
 constexpr int kSettleMs = 25;   // device needs ~25 ms before the reply lands (UMD)
 constexpr int kReplyMs = 400;   // per-frame read window (UMD OutputExchange timeout)
@@ -242,28 +242,46 @@ bool BatteryReader::Exchange(HANDLE device, unsigned char reportId,
     return true;
 }
 
-std::optional<BatteryReading> BatteryReader::Parse(const std::vector<unsigned char>& raw,
-                                                   unsigned char reportId, const wchar_t* protocol)
+std::optional<BatteryReading> BatteryReader::Parse(const std::vector<unsigned char>& raw)
 {
-    if (raw.empty()) return std::nullopt;
+    if (raw.size() < 5) return std::nullopt;
 
+    // raw includes the leading report id (e.g. 0xF0). Strip it if present.
     std::vector<unsigned char> body = raw;
-    if (body.size() > 1 && body[0] == reportId) body.erase(body.begin());
+    if (body.size() > 1 && (body[0] == 0xF0 || body[0] == 0xAB || body[0] == 0x0A))
+        body.erase(body.begin());
 
-    if (std::wcscmp(protocol, L"ajazz") == 0)
+    // Layout A — this exact unit (verified on-device 2026-11-20):
+    //   55 30 <PCT> 0B 2E 01 01 01 ...   percent@2, written by the firmware.
+    //   The request carries A5 at [2]; every other byte is echoed, only [2]
+    //   comes back as the live level. Confirmed stable 0x3C=60 across 20 reads
+    //   and across payload[2] = A5/00/FF/30/7B.
+    if (body.size() >= 5 && body[0] == 0x55 && body[1] == 0x30 &&
+        body[3] == 0x0B && body[4] == 0x2E)
     {
-        // 30 01 ... ; percent at [7], charging at [8].
-        if (body.size() < 9 || body[0] != 0x30) return std::nullopt;
-        if (body[7] < 1 || body[7] > 100) return std::nullopt;
-        return BatteryReading{body[7], body[8] != 0, protocol};
+        const int pct = body[2];
+        if (pct >= 1 && pct <= 100)
+        {
+            // No dedicated charge bit observed on this layout; the trailing
+            // bytes are all zero. Treat a non-zero byte[9] as charging if a
+            // future firmware exposes it, else discharging.
+            const bool charging = body.size() > 9 && body[9] != 0;
+            return BatteryReading{pct, charging, L"ksnake-ff01"};
+        }
     }
 
-    // YJX / Ksnake reply: AA 30 A5 0B ... ; percent at [8], charging at [9].
-    // 0 and >100 mean "not a reading" (sleeping mouse / out of range).
-    if (body.size() < 10) return std::nullopt;
-    if (body[0] != 0xAA || body[1] != 0x30) return std::nullopt;
-    if (body[8] < 1 || body[8] > 100) return std::nullopt;
-    return BatteryReading{body[8], body[9] != 0, protocol};
+    // Layout B — UMD/AreYouLowBattery YJX variant: AA 30 A5 0B ... pct@8 chg@9.
+    if (body.size() >= 10 && body[0] == 0xAA && body[1] == 0x30)
+    {
+        const int pct = body[8];
+        if (pct >= 1 && pct <= 100)
+            return BatteryReading{pct, body[9] != 0, L"ksnake-yjx"};
+    }
+
+    // Ajazz frame (30 01 ... 64) is deliberately NOT parsed: it returns a
+    // constant 0x64 "100%" regardless of charge. Reporting it was the original
+    // bug. Returning nullopt makes Read() keep trying instead of showing 100%.
+    return std::nullopt;
 }
 
 std::optional<BatteryReading> BatteryReader::Read(int timeoutMs, FILE* log)
@@ -328,31 +346,19 @@ std::optional<BatteryReading> BatteryReader::Read(int timeoutMs, FILE* log)
 
                 // OutputReportByteLength on Windows already counts the leading
                 // report id, so payload = outLen-1 and wire = [id]+payload = outLen.
-                // The FF01 collection (out=64) takes the YJX frame just fine: wire
-                // = [0x00]+63 = 64B. The old "Ksnake needs 65B, skip it" guard was
-                // a report-id miscount (HidSharp counts payload, Windows counts id).
-                if (reportId == 0x00 && entry.outLen < 9) continue;  // room for YJX head
-                if (reportId == 0xF0 && entry.outLen < 3) continue;  // room for Ajazz head
+                // The FF01 collection (out=64) takes wire = [F0]+63 = 64B.
+                if (entry.outLen < 9) continue;  // room for the 8-byte Ksnake head
 
                 std::vector<unsigned char> payload(static_cast<size_t>(entry.outLen) - 1, 0);
-                const bool ajazz = reportId == 0xF0;
 
-                if (ajazz)
-                {
-                    payload[0] = 0x30;
-                    if (payload.size() > 1) payload[1] = 0x01;
-                }
-                else
-                {
-                    // YJX / Ksnake GET_BATTERY (hardware-verified):
-                    //   00 55 30 A5 0B 2E 01 01 01 <zeros>
-                    // reply AA 30 ... -> percent@8, charging@9.
-                    // Note bytes 7 and 8 are 0x01 (not zero as UMD's old port had).
-                    static const unsigned char kHead[] = {0x55, 0x30, 0xA5, 0x0B, 0x2E,
-                                                          0x01, 0x01, 0x01};
-                    const size_t copy = std::min(payload.size(), sizeof(kHead));
-                    std::memcpy(payload.data(), kHead, copy);
-                }
+                // Ksnake/YJX GET_BATTERY on every declared report id. On the
+                // FF01/0xF0 collection this returns 55 30 <PCT> 0B 2E ... and
+                // Parse() reads the live level from body[2]. The Ajazz 30 01
+                // frame returned a constant fake 100% and is no longer sent.
+                static const unsigned char kHead[] = {0x55, 0x30, 0xA5, 0x0B, 0x2E,
+                                                      0x01, 0x01, 0x01};
+                const size_t copy = std::min(payload.size(), sizeof(kHead));
+                std::memcpy(payload.data(), kHead, copy);
 
                 // UMD OutputExchange 时序：Drain → write → sleep(25ms) → ReadFile(400ms)，
                 // 最多 8 次尝试。每次失败后间隔 30ms 再重试。
@@ -395,7 +401,7 @@ std::optional<BatteryReading> BatteryReader::Read(int timeoutMs, FILE* log)
                                  attempt, hex.c_str());
                     }
 
-                    hit = Parse(reply, reportId, ajazz ? L"ajazz" : L"ksnake");
+                    hit = Parse(reply);
                     if (hit)
                     {
                         hit->outLen = entry.outLen;

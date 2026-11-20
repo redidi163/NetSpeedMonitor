@@ -4,6 +4,7 @@ logs/
 shots/
 __pycache__/
 *.py[cod]
+*.obj
 .ruff_cache/
 .pytest_cache/
 .venv/
