@@ -9,16 +9,17 @@ std::wstring FormatRate(double bytesPerSecond)
     const double kbps = bytesPerSecond / 1024.0;
     if (kbps < 1024.0)
     {
-        // Fixed 3 integer digits, 1 decimal: "041.0" KB/s
+        // Fixed 3 integer digits, right-aligned, leading spaces, no decimals:
+        //   0 -> "  0", 5 -> "  5", 41 -> " 41", 123 -> "123"
         wchar_t buffer[32];
-        swprintf_s(buffer, L"%03.1f", kbps);
+        swprintf_s(buffer, L"%3.0f", kbps);
         return buffer;
     }
 
-    // >= 1 MB/s: switch to MB/s, 2 decimals: "1.46" MB/s
+    // >= 1 MB/s: switch to MB/s, no decimals, same 3-digit right alignment
     const double mbps = kbps / 1024.0;
     wchar_t buffer[32];
-    swprintf_s(buffer, L"%.2f", mbps);
+    swprintf_s(buffer, L"%3.0f", mbps);
     return buffer;
 }
 
