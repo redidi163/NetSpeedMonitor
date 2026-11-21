@@ -7,31 +7,51 @@ namespace
 constexpr ULONGLONG kOpenGraceMs = 500;
 } // namespace
 
-OutsideCollapse* OutsideCollapse::owner_ = nullptr;
+OutsideCollapse* OutsideCollapse::owners_[OutsideCollapse::kMaxOwners] = {};
+int OutsideCollapse::ownerCount_ = 0;
+HHOOK OutsideCollapse::hook_ = nullptr;
 
 void OutsideCollapse::Start(HWND target, UINT message)
 {
     if (!target) return;
 
-    Stop(); // a second Start must not leak the previous hook
+    Stop(); // a second Start must not register this instance twice
 
     target_ = target;
     message_ = message;
     foregroundAtOpen_ = GetForegroundWindow();
     openedAt_ = GetTickCount64();
+    registered_ = true;
 
-    owner_ = this;
-    hook_ = SetWindowsHookExW(WH_MOUSE_LL, Proc, GetModuleHandleW(nullptr), 0);
+    if (ownerCount_ < kMaxOwners) owners_[ownerCount_++] = this;
+
+    // One hook for every owner: installing one per popup would make the second
+    // hook's callbacks all read a single static owner (native-10 regression).
+    if (!hook_) hook_ = SetWindowsHookExW(WH_MOUSE_LL, Proc, GetModuleHandleW(nullptr), 0);
 }
 
 void OutsideCollapse::Stop()
 {
-    if (hook_)
+    // Remove this instance from the owner table.
+    for (int i = 0; i < ownerCount_; ++i)
+    {
+        if (owners_[i] == this)
+        {
+            owners_[i] = owners_[ownerCount_ - 1]; // swap-remove, order is irrelevant
+            owners_[--ownerCount_] = nullptr;
+            break;
+        }
+    }
+    registered_ = false;
+
+    // Tear the shared hook down only after the last owner is gone: a stale post
+    // after a popup closed would collapse the next open.
+    if (ownerCount_ == 0 && hook_)
     {
         UnhookWindowsHookEx(hook_);
         hook_ = nullptr;
     }
-    if (owner_ == this) owner_ = nullptr;
+
     target_ = nullptr;
     message_ = 0;
     foregroundAtOpen_ = nullptr;
@@ -68,15 +88,17 @@ bool OutsideCollapse::Hit(POINT point) const
 LRESULT CALLBACK OutsideCollapse::Proc(int code, WPARAM wParam, LPARAM lParam)
 {
     // The hook sits in the system's input path, so the callback only hit-tests
-    // and posts; the actual hide runs on the UI thread.
-    if (code == HC_ACTION && owner_ && owner_->target_ &&
-        IsWindowVisible(owner_->target_) &&
+    // and posts; the actual hide runs on the UI thread. Fan the click out to
+    // every registered popup so a panel + usage list open together both react.
+    if (code == HC_ACTION && ownerCount_ > 0 &&
         (wParam == WM_LBUTTONDOWN || wParam == WM_RBUTTONDOWN || wParam == WM_MBUTTONDOWN))
     {
         const auto* info = reinterpret_cast<const MSLLHOOKSTRUCT*>(lParam);
-        if (!owner_->Hit(info->pt))
+        for (int i = 0; i < ownerCount_; ++i)
         {
-            PostMessageW(owner_->target_, owner_->message_, 0, 0);
+            OutsideCollapse* owner = owners_[i];
+            if (!owner || !owner->target_ || !IsWindowVisible(owner->target_)) continue;
+            if (!owner->Hit(info->pt)) PostMessageW(owner->target_, owner->message_, 0, 0);
         }
     }
     return CallNextHookEx(nullptr, code, wParam, lParam);

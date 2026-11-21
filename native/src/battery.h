@@ -104,12 +104,19 @@ public:
     void Stop();
     BatterySnapshot Snapshot();
 
+    // Wakes the worker so it re-reads the battery now instead of sleeping until
+    // the next 6 h poll. Used after sleep/wake, where the receiver's state may
+    // have changed while the machine was suspended. Safe to call before Start()
+    // or after Stop().
+    void Refresh();
+
 private:
     static DWORD WINAPI ThreadProc(void* self);
     void Loop();
 
     HANDLE thread_ = nullptr;
     HANDLE stop_ = nullptr;
+    HANDLE wake_ = nullptr; // manual-reset: interrupts the long poll wait
     SRWLOCK lock_ = SRWLOCK_INIT;
     BatterySnapshot state_{};
     int64_t sampledTicks_ = 0;

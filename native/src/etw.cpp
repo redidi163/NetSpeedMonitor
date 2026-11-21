@@ -84,6 +84,12 @@ bool EtwSampler::Start(const std::wstring& sessionName)
 {
     if (running_) return true;
 
+    // Idempotent cleanup: Stop() is a no-op on a fresh object and destroys any
+    // critical section left by a previous run, so the Init below always pairs
+    // with exactly one Delete. A sleep/wake rebuild goes Stop() -> Start() and
+    // must not re-initialise a still-live lock_ (undefined behaviour + leak).
+    Stop();
+
     sessionName_ = sessionName;
     InitializeCriticalSection(&lock_);
     lockReady_ = true;
@@ -202,6 +208,15 @@ void EtwSampler::Stop()
         WaitForSingleObject(thread_, 2000);
         CloseHandle(thread_);
         thread_ = nullptr;
+    }
+
+    // Destroy the lock only after the consumer thread that used it has exited.
+    // This pairs with Start()'s InitializeCriticalSection so wake rebuilds do
+    // not accumulate un-deleted critical sections.
+    if (lockReady_)
+    {
+        DeleteCriticalSection(&lock_);
+        lockReady_ = false;
     }
 
     free(properties_);

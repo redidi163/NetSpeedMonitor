@@ -448,13 +448,20 @@ void BatteryMonitor::Start()
 {
     if (thread_) return;
     stop_ = CreateEventW(nullptr, TRUE, FALSE, nullptr);
-    if (!stop_) return;
+    wake_ = CreateEventW(nullptr, TRUE, FALSE, nullptr);
+    if (!stop_ || !wake_)
+    {
+        if (stop_) { CloseHandle(stop_); stop_ = nullptr; }
+        if (wake_) { CloseHandle(wake_); wake_ = nullptr; }
+        return;
+    }
     thread_ = CreateThread(nullptr, 0, ThreadProc, this, 0, nullptr);
 }
 
 void BatteryMonitor::Stop()
 {
     if (stop_) SetEvent(stop_);
+    if (wake_) SetEvent(wake_); // release a wait in case stop_ alone is missed
     if (thread_)
     {
         WaitForSingleObject(thread_, 5000);
@@ -466,6 +473,18 @@ void BatteryMonitor::Stop()
         CloseHandle(stop_);
         stop_ = nullptr;
     }
+    if (wake_)
+    {
+        CloseHandle(wake_);
+        wake_ = nullptr;
+    }
+}
+
+void BatteryMonitor::Refresh()
+{
+    // Manual-reset event: the worker clears it after waking. Calling this
+    // before Start() or after Stop() is a harmless no-op.
+    if (wake_) SetEvent(wake_);
 }
 
 DWORD WINAPI BatteryMonitor::ThreadProc(void* self)
@@ -499,7 +518,15 @@ void BatteryMonitor::Loop()
 
         failures = reading ? 0 : failures + 1;
         const int wait = reading ? kPollOkMs : (failures >= 3 ? kPollBackoffMs : kPollFailMs);
-        if (WaitForSingleObject(stop_, static_cast<DWORD>(wait)) == WAIT_OBJECT_0) break;
+
+        // Sleep until the next poll, unless Stop() or a wake request (e.g. after
+        // resume) interrupts. A woken pass re-reads immediately and keeps the
+        // existing failure counter, so a transient asleep mouse still backs off.
+        HANDLE waits[] = {stop_, wake_};
+        const DWORD signaled =
+            WaitForMultipleObjects(2, waits, FALSE, static_cast<DWORD>(wait));
+        if (signaled == WAIT_OBJECT_0) break; // stop_
+        if (signaled == WAIT_OBJECT_0 + 1) ResetEvent(wake_); // wake_: read again now
     }
 }
 

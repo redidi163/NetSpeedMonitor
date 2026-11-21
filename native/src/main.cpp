@@ -54,6 +54,7 @@ struct App
     int forcedPercent = -1; // --battery-force=NN[c], acceptance switch
     bool forcedCharging = false;
     HWND host = nullptr;
+    std::wstring accountingDate; // the date the live ledger belongs to (SPEC 19)
 };
 
 App* g_app = nullptr;
@@ -122,10 +123,37 @@ void TogglePanel(App& app)
 // out of the file, so the two cannot disagree.
 void RefreshUsageWindow(App& app)
 {
-    const std::wstring today = LocalDateString();
+    // The ledger may have just rolled to a new date; Aggregate() skips the row
+    // whose date equals today because the live ledger already carries it. Use
+    // the ledger's own date so that stays true across midnight.
+    const std::wstring today = app.accountingDate;
     app.usageWindow.SetData(app.store.Aggregate(1, today, app.usage),
                             app.store.Aggregate(7, today, app.usage),
                             app.store.Error().empty());
+}
+
+// SPEC 19: the ledger only ever adds. If the process stays up across midnight,
+// clocking over must close the old day to disk before any new-day byte lands,
+// then start the new day from zero. Without this, the whole ledger keeps the
+// previous day's total and MaybeSave() rewrites it under the new date - the old
+// row stops changing only if the process restarts, which is not the long-run
+// case. Ordering matters: close old -> reset -> reseed -> advance the label.
+void RollAccountingDateIfNeeded(App& app)
+{
+    const std::wstring today = LocalDateString();
+    if (today == app.accountingDate) return;
+
+    // 1. Flush everything accumulated so far under the OLD date.
+    app.store.MaybeSave(app.accountingDate, app.usage, TicksToSeconds(NowTicks()), true);
+    // 2. Drop yesterday's in-memory accounts and totals.
+    app.usage.Reset();
+    // 3. The total just fell to zero; clear the save watermark so the next tick
+    //    still writes the new day even though the byte delta looks "negative".
+    app.store.ResetThrottle();
+    // 4. Restore any rows already persisted for the new date (e.g. an earlier
+    //    run today), then adopt the new label.
+    app.store.SeedToday(today, app.usage);
+    app.accountingDate = today;
 }
 
 void ShowUsageWindow(App& app)
@@ -171,6 +199,10 @@ void ShowUsageWindow(App& app)
 
 void OnTick(App& app)
 {
+    // SPEC 19: run this before any byte is added so the first frame of a new
+    // day never inherits yesterday's total.
+    RollAccountingDateIfNeeded(app);
+
     // SPEC 4/14: the counters always follow the default route; re-read it every
     // 5 s. There is no pinned interface, so this is the only place it changes.
     if (app.tick % kRouteRecheckTicks == 0) app.sampler.FollowDefaultRoute();
@@ -213,7 +245,7 @@ void OnTick(App& app)
         app.usage.Add(app.aggregator.TakeUsageDeltas());
     }
 
-    app.store.MaybeSave(LocalDateString(), app.usage, TicksToSeconds(NowTicks()), false);
+    app.store.MaybeSave(app.accountingDate, app.usage, TicksToSeconds(NowTicks()), false);
 
     app.panel.SetUsage(app.usage.TotalDown(), app.usage.TotalUp(), app.store.Error().empty());
     if (app.usageWindow.IsVisible()) RefreshUsageWindow(app);
@@ -284,6 +316,9 @@ LRESULT CALLBACK HostProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lParam)
                 app->etw.Start(kEtwSession);
                 app->sampler.ResetBaseline();
                 app->aggregator.Reset();
+                // The receiver may have slept/woken during suspend: interrupt
+                // the long poll so the pill shows a fresh reading within a tick.
+                app->battery.Refresh();
             }
         }
         return TRUE;
@@ -309,7 +344,7 @@ LRESULT CALLBACK HostProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lParam)
     case WM_DESTROY:
         KillTimer(hwnd, kTimerId);
         // Force the last 30 s of usage to disk before the process disappears.
-        app->store.MaybeSave(LocalDateString(), app->usage, 0, true);
+        app->store.MaybeSave(app->accountingDate, app->usage, 0, true);
         PostQuitMessage(0);
         return 0;
 
@@ -731,9 +766,10 @@ int APIENTRY wWinMain(HINSTANCE instance, HINSTANCE, LPWSTR, int)
     UpdateTooltip(app);
 
     // Seed before the first tick: a restart continues today's totals instead of
-    // starting from zero.
-    app.store.Open(DefaultUsageDir(), LocalDateString());
-    app.store.SeedToday(LocalDateString(), app.usage);
+    // starting from zero. The same label drives every save and the midnight roll.
+    app.accountingDate = LocalDateString();
+    app.store.Open(DefaultUsageDir(), app.accountingDate);
+    app.store.SeedToday(app.accountingDate, app.usage);
 
     SetTimer(app.host, kTimerId, kTickMs, nullptr);
     OnTick(app);

@@ -48,6 +48,11 @@ public:
     std::vector<UsageRow> Aggregate(int days, const std::wstring& today,
                                     const UsageLedger& ledger) const;
 
+    // Forget the last-save watermark. Called when the live ledger is reset at
+    // midnight: the total drops back to zero, which must not be mistaken for
+    // "nothing new" by MaybeSave().
+    void ResetThrottle() { lastSavedAt_ = -1; lastSavedTotal_ = 0; }
+
     const std::wstring& Dir() const { return dir_; }
     const std::wstring& Error() const { return error_; }
     int64_t Rows() const { return static_cast<int64_t>(rows_.size()); }
