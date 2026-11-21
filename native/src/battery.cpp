@@ -251,24 +251,19 @@ std::optional<BatteryReading> BatteryReader::Parse(const std::vector<unsigned ch
     if (body.size() > 1 && (body[0] == 0xF0 || body[0] == 0xAB || body[0] == 0x0A))
         body.erase(body.begin());
 
-    // Layout A — this exact unit (verified on-device 2026-11-20):
-    //   55 30 <PCT> 0B 2E 01 01 01 ...   percent@2, written by the firmware.
-    //   The request carries A5 at [2]; every other byte is echoed, only [2]
-    //   comes back as the live level. Confirmed stable 0x3C=60 across 20 reads
-    //   and across payload[2] = A5/00/FF/30/7B.
-    if (body.size() >= 5 && body[0] == 0x55 && body[1] == 0x30 &&
-        body[3] == 0x0B && body[4] == 0x2E)
-    {
-        const int pct = body[2];
-        if (pct >= 1 && pct <= 100)
-        {
-            // No dedicated charge bit observed on this layout; the trailing
-            // bytes are all zero. Treat a non-zero byte[9] as charging if a
-            // future firmware exposes it, else discharging.
-            const bool charging = body.size() > 9 && body[9] != 0;
-            return BatteryReading{pct, charging, L"ksnake-ff01"};
-        }
-    }
+    // NO battery layout lives on a "55 30 ..." reply — that frame is an ACK echo.
+    // Measured 2026-11-21 (probe_echo.py / probe_delta.py):
+    //   * every payload byte comes back byte-identical (8/8 marker bytes at
+    //     [16..23] mirrored), so the receiver just echoes what we wrote;
+    //   * body[2] is a plain additive checksum over payload[0..16] minus [2]
+    //     (+0x7B): changing [5],[6],[7],[16] moves it by exactly the same
+    //     delta, changing [30],[40] does not move it at all;
+    //   * it therefore "tracks" our own frame, not the mouse: [7] 0x01 -> 0x3C
+    //     and [7] 0x00 -> 0x3B is why the old code looked like it read 60% and
+    //     then 59%. Reading it as a level was a false positive.
+    // The real reply (AA 30 ... pct@8) never arrives, so report nothing and let
+    // Read() retry rather than display a checksum as a battery level.
+    if (body.size() >= 5 && body[0] == 0x55 && body[1] == 0x30) return std::nullopt;
 
     // Layout B — UMD/AreYouLowBattery YJX variant: AA 30 A5 0B ... pct@8 chg@9.
     if (body.size() >= 10 && body[0] == 0xAA && body[1] == 0x30)
